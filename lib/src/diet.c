@@ -72,6 +72,23 @@ static inline struct ival * find_min(struct ival * const i)
 }
 
 
+/// Compare two ival intervals.
+///
+/// @param[in]  a     Interval one.
+/// @param[in]  b     Interval two.
+///
+/// @return     Zero if a is in b or b is in a. Negative if a's lower bound is
+///             less than b's lower bound, positive otherwise.
+///
+int ival_cmp(const struct ival * const a, const struct ival * const b)
+{
+    if ((a->lo >= b->lo && a->lo <= b->hi) ||
+        (b->lo >= a->lo && b->lo <= a->hi))
+        return 0;
+    return (a->lo > b->lo) - (a->lo < b->lo);
+}
+
+
 /// Pointer to the interval containing @p n in diet tree @p d. Also has the side
 /// effect of splaying the closest interval to @p n to the root of @p d.
 ///

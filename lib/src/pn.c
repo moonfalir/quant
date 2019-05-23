@@ -41,6 +41,21 @@
 #include "stream.h"
 
 
+struct pn_space * pn_for_epoch(struct q_conn * const c, const epoch_t e)
+{
+    switch (e) {
+    case ep_init:
+        return &c->pns[pn_init];
+    case ep_hshk:
+        return &c->pns[pn_hshk];
+    case ep_0rtt:
+    case ep_data:
+        return &c->pns[pn_data];
+    }
+    die("unhandled epoch %u", e);
+}
+
+
 void pm_by_nr_del(khash_t(pm_by_nr) * const pbn,
                   const struct pkt_meta * const p)
 {
@@ -197,4 +212,17 @@ ack_t needs_ack(const struct pn_space * const pn)
          pn_type_str(pn->type));
 #endif
     return del_ack;
+}
+
+
+const char * pn_type_str(const pn_t type)
+{
+    switch (type) { // lgtm [cpp/missing-return]
+    case pn_init:
+        return "Initial";
+    case pn_hshk:
+        return "Handshake";
+    case pn_data:
+        return "Data";
+    }
 }

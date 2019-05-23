@@ -64,19 +64,6 @@ struct pn_data {
 typedef enum { pn_init = 0, pn_hshk = 1, pn_data = 2 } pn_t;
 
 
-static inline const char * __attribute__((const)) pn_type_str(const pn_t type)
-{
-    switch (type) { // lgtm [cpp/missing-return]
-    case pn_init:
-        return "Initial";
-    case pn_hshk:
-        return "Handshake";
-    case pn_data:
-        return "Data";
-    }
-}
-
-
 struct pn_space {
     struct diet recv; ///< Received packet numbers still needing to be ACKed.
     struct diet recv_all; ///< All received packet numbers.
@@ -133,6 +120,11 @@ extern void __attribute__((nonnull)) free_pn(struct pn_space * const pn);
 extern void __attribute__((nonnull)) reset_pn(struct pn_space * const pn);
 
 extern void __attribute__((nonnull)) abandon_pn(struct pn_space * const pn);
+
+extern struct pn_space * __attribute__((nonnull))
+pn_for_epoch(struct q_conn * const c, const epoch_t e);
+
+extern const char * __attribute__((const)) pn_type_str(const pn_t type);
 
 
 typedef enum { no_ack = 0, grat_ack = 1, del_ack = 2, imm_ack = 3 } ack_t;

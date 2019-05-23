@@ -30,8 +30,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "conn.h"
-#include "quic.h"
 #include "tls.h"
 
 #define MAX_PKT_LEN 1252
@@ -67,84 +65,14 @@
 #define ERR_TLS(type) (0x100 + (type))
 
 
-static inline bool __attribute__((const)) is_lh(const uint8_t flags)
-{
-    return is_set(HEAD_FORM, flags);
-}
-
-
-static inline uint8_t __attribute__((const)) pkt_type(const uint8_t flags)
-{
-    return is_lh(flags) ? flags & LH_TYPE_MASK : SH;
-}
-
-
-static inline uint8_t __attribute__((const)) pkt_nr_len(const uint8_t flags)
-{
-    return (flags & HEAD_PNRL_MASK) + 1;
-}
-
-
-static inline epoch_t __attribute__((const))
-epoch_for_pkt_type(const uint8_t type)
-{
-    switch (type) {
-    case LH_INIT:
-    case LH_RTRY:
-        return ep_init;
-    case LH_0RTT:
-        return ep_0rtt;
-    case LH_HSHK:
-        return ep_hshk;
-    default:
-        return ep_data;
-    }
-}
-
-
-static inline struct pn_space * __attribute__((nonnull))
-pn_for_pkt_type(struct q_conn * const c, const uint8_t t)
-{
-    return pn_for_epoch(c, epoch_for_pkt_type(t));
-}
-
-
-static inline const char * __attribute__((const, nonnull))
-pkt_type_str(const uint8_t flags, const void * const vers)
-{
-    if (is_lh(flags)) {
-        if (((const uint8_t * const)vers)[0] == 0 &&
-            ((const uint8_t * const)vers)[1] == 0 &&
-            ((const uint8_t * const)vers)[2] == 0 &&
-            ((const uint8_t * const)vers)[3] == 0)
-            return "Version Negotiation";
-        switch (pkt_type(flags)) {
-        case LH_INIT:
-            return "Initial";
-        case LH_RTRY:
-            return "Retry";
-        case LH_HSHK:
-            return "Handshake";
-        case LH_0RTT:
-            return "0-RTT Protected";
-        }
-    } else if (pkt_type(flags) == SH)
-        return "Short";
-    return RED "Unknown" NRM;
-}
-
-
-static inline bool __attribute__((const))
-has_pkt_nr(const uint8_t flags, const uint32_t vers)
-{
-    return is_lh(flags) == false || (vers && pkt_type(flags) != LH_RTRY);
-}
-
-
+struct q_conn;
 struct q_stream;
 struct w_iov;
 struct w_iov_sq;
 struct sockaddr;
+struct cid;
+struct pkt_meta;
+
 
 extern bool __attribute__((nonnull)) xor_hp(struct w_iov * const xv,
                                             const struct pkt_meta * const m,
@@ -182,12 +110,29 @@ extern bool __attribute__((nonnull)) enc_pkt(struct q_stream * const s,
 
 extern void __attribute__((nonnull)) coalesce(struct w_iov_sq * const q);
 
+extern const char * __attribute__((const, nonnull))
+pkt_type_str(const uint8_t flags, const void * const vers);
+
 extern void __attribute__((nonnull(1, 2, 3, 4)))
 enc_lh_cids(uint8_t ** pos,
             const uint8_t * const end,
             struct pkt_meta * const m,
             const struct cid * const dcid,
             const struct cid * const scid);
+
+extern bool __attribute__((const)) is_lh(const uint8_t flags);
+
+extern uint8_t __attribute__((const)) pkt_type(const uint8_t flags);
+
+extern uint8_t __attribute__((const)) pkt_nr_len(const uint8_t flags);
+
+extern epoch_t __attribute__((const)) epoch_for_pkt_type(const uint8_t type);
+
+extern struct pn_space * __attribute__((nonnull))
+pn_for_pkt_type(struct q_conn * const c, const uint8_t t);
+
+extern bool __attribute__((const))
+has_pkt_nr(const uint8_t flags, const uint32_t vers);
 
 #ifndef NDEBUG
 extern void __attribute__((nonnull(1, 2, 3)))

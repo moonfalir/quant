@@ -29,11 +29,14 @@
 #include <math.h>
 #include <netdb.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <time.h>
+
 
 #define klib_unused
 
@@ -997,4 +1000,51 @@ void q_info(struct q_conn * const c, struct q_conn_info * const ci)
 {
     conn_info_populate(c);
     memcpy(ci, &c->i, sizeof(*ci));
+}
+
+
+int cids_by_seq_cmp(const struct cid * const a, const struct cid * const b)
+{
+    return (a->seq > b->seq) - (a->seq < b->seq);
+}
+
+
+void cid_cpy(struct cid * const dst, const struct cid * const src)
+{
+    memcpy((uint8_t *)dst + offsetof(struct cid, seq),
+           (const uint8_t *)src + offsetof(struct cid, seq),
+           sizeof(struct cid) - offsetof(struct cid, seq) -
+               sizeof(src->_unused));
+}
+
+
+void pm_cpy(struct pkt_meta * const dst,
+            const struct pkt_meta * const src,
+            const bool also_frame_info)
+{
+    const size_t off = also_frame_info ? offsetof(struct pkt_meta, stream)
+                                       : offsetof(struct pkt_meta, tx_t);
+    memcpy((uint8_t *)dst + off, (const uint8_t *)src + off,
+           sizeof(*dst) - off);
+}
+
+
+int ooo_by_off_cmp(const struct pkt_meta * const a,
+                   const struct pkt_meta * const b)
+{
+    return (a->stream_off > b->stream_off) - (a->stream_off < b->stream_off);
+}
+
+
+void adj_iov_to_start(struct w_iov * const v, const struct pkt_meta * const m)
+{
+    v->buf -= m->stream_data_start;
+    v->len += m->stream_data_start;
+}
+
+
+void adj_iov_to_data(struct w_iov * const v, const struct pkt_meta * const m)
+{
+    v->buf += m->stream_data_start;
+    v->len -= m->stream_data_start;
 }

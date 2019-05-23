@@ -33,9 +33,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <sys/socket.h>
-#include <sys/types.h>
 
 #define klib_unused
 
@@ -65,44 +63,20 @@ KHASH_MAP_INIT_INT64(streams_by_id, struct q_stream *)
 KHASH_MAP_INIT_INT64(conns_by_ipnp, struct q_conn *)
 
 
-static inline khint_t __attribute__((nonnull))
-hash_cid(const struct cid * const id)
-{
-    return fnv1a_32(id->id, id->len);
-}
+extern khint_t __attribute__((nonnull)) hash_cid(const struct cid * const id);
 
+extern int __attribute__((nonnull))
+cid_cmp(const struct cid * const a, const struct cid * const b);
 
-static inline int __attribute__((nonnull))
-cid_cmp(const struct cid * const a, const struct cid * const b)
-{
-    // if the lengths are different, memcmp will fail on the first byte
-    return memcmp(&a->len, &b->len, a->len + sizeof(a->len));
-}
-
-
-static inline int __attribute__((nonnull))
-kh_cid_cmp(const struct cid * const a, const struct cid * const b)
-{
-    return cid_cmp(a, b) == 0;
-}
-
+extern int __attribute__((nonnull))
+kh_cid_cmp(const struct cid * const a, const struct cid * const b);
 
 KHASH_INIT(conns_by_id, struct cid *, struct q_conn *, 1, hash_cid, kh_cid_cmp)
 
+extern khint_t __attribute__((nonnull)) hash_srt(const uint8_t * const srt);
 
-static inline khint_t __attribute__((nonnull))
-hash_srt(const uint8_t * const srt)
-{
-    return fnv1a_32(srt, SRT_LEN);
-}
-
-
-static inline int __attribute__((nonnull))
-kh_srt_cmp(const uint8_t * const a, const uint8_t * const b)
-{
-    return memcmp(a, b, SRT_LEN) == 0;
-}
-
+extern int __attribute__((nonnull))
+kh_srt_cmp(const uint8_t * const a, const uint8_t * const b);
 
 KHASH_INIT(conns_by_srt, uint8_t *, struct q_conn *, 1, hash_srt, kh_srt_cmp)
 
@@ -352,27 +326,30 @@ conn_info_populate(struct q_conn * const c);
 
 extern void __attribute__((nonnull)) use_next_dcid(struct q_conn * const c);
 
+extern bool __attribute__((nonnull))
+has_pval_wnd(const struct q_conn * const c, const uint16_t len);
+
+extern bool __attribute__((nonnull))
+has_wnd(const struct q_conn * const c, const uint16_t len);
+
+extern bool __attribute__((nonnull)) needs_more_ncids(struct q_conn * const c);
+
+extern uint64_t __attribute__((nonnull))
+conns_by_ipnp_key(const struct sockaddr * const src,
+                  const struct sockaddr * const dst);
+
+
+extern void __attribute__((nonnull)) conns_by_ipnp_ins(struct q_conn * const c);
+
+
+extern void __attribute__((nonnull))
+conns_by_ipnp_del(const struct q_conn * const c);
+
 #ifdef FUZZING
 extern void __attribute__((nonnull)) rx_pkts(struct w_iov_sq * const x,
                                              struct q_conn_sl * const crx,
                                              const struct w_sock * const ws);
 #endif
-
-static inline struct pn_space * __attribute__((nonnull))
-pn_for_epoch(struct q_conn * const c, const epoch_t e)
-{
-    switch (e) {
-    case ep_init:
-        return &c->pns[pn_init];
-    case ep_hshk:
-        return &c->pns[pn_hshk];
-    case ep_0rtt:
-    case ep_data:
-        return &c->pns[pn_data];
-    }
-    die("unhandled epoch %u", e);
-}
-
 
 SPLAY_PROTOTYPE(cids_by_seq, cid, node_seq, cids_by_seq_cmp)
 
@@ -412,94 +389,8 @@ static inline __attribute__((const)) bool is_zero(const ev_tstamp t)
 }
 
 
-static inline bool __attribute__((nonnull))
-has_pval_wnd(const struct q_conn * const c, const uint16_t len)
-{
-    if (unlikely(c->out_data + len >= c->path_val_win)) {
-        warn(DBG,
-             "%s conn %s path val lim reached: %" PRIu64 " + %u >= %" PRIu64,
-             conn_type(c), cid2str(c->scid), c->out_data, len, c->path_val_win);
-        return false;
-    }
-
-    return true;
-}
-
-
-static inline bool __attribute__((nonnull))
-has_wnd(const struct q_conn * const c, const uint16_t len)
-{
-    if (unlikely(c->blocked)) {
-        warn(DBG, "%s conn %s is blocked", conn_type(c), cid2str(c->scid));
-        return false;
-    }
-
-    if (unlikely(c->rec.in_flight + len >= c->rec.cwnd)) {
-        warn(DBG,
-             "%s conn %s cwnd lim reached: in_flight %" PRIu64
-             " + %u >= %" PRIu64,
-             conn_type(c), cid2str(c->scid), c->rec.in_flight, len,
-             c->rec.cwnd);
-        return false;
-    }
-
-    return has_pval_wnd(c, len);
-}
-
-
 static inline uint16_t get_sport(const struct w_sock * const sock)
 {
     return ((const struct sockaddr_in *)(const void *)w_get_addr(sock, true))
         ->sin_port;
-}
-
-
-static inline bool needs_more_ncids(struct q_conn * const c)
-{
-    const struct cid * const max_scid =
-        splay_max(cids_by_seq, &c->scids_by_seq);
-    return splay_count(&c->scids_by_seq) <= 8 ||
-           (max_scid && c->max_cid_seq_out < max_scid->seq);
-}
-
-
-static inline uint64_t __attribute__((nonnull))
-conns_by_ipnp_key(const struct sockaddr * const src,
-                  const struct sockaddr * const dst)
-{
-    const struct sockaddr_in * const src4 =
-        (const struct sockaddr_in *)(const void *)src;
-    const struct sockaddr_in * const dst4 =
-        (const struct sockaddr_in *)(const void *)dst;
-
-    return ((uint64_t)dst4->sin_addr.s_addr
-            << sizeof(dst4->sin_addr.s_addr) * 8) |
-           ((uint64_t)src4->sin_port << sizeof(src4->sin_port) * 8) |
-           (uint64_t)dst4->sin_port;
-}
-
-
-static inline void __attribute__((nonnull))
-conns_by_ipnp_ins(struct q_conn * const c)
-{
-    int ret;
-    const khiter_t k =
-        kh_put(conns_by_ipnp, conns_by_ipnp,
-               (khint64_t)conns_by_ipnp_key(w_get_addr(c->sock, true),
-                                            (struct sockaddr *)&c->peer),
-               &ret);
-    ensure(ret >= 1, "inserted returned %d", ret);
-    kh_val(conns_by_ipnp, k) = c;
-}
-
-
-static inline void __attribute__((nonnull))
-conns_by_ipnp_del(const struct q_conn * const c)
-{
-    const khiter_t k =
-        kh_get(conns_by_ipnp, conns_by_ipnp,
-               (khint64_t)conns_by_ipnp_key(w_get_addr(c->sock, true),
-                                            (const struct sockaddr *)&c->peer));
-    ensure(k != kh_end(conns_by_ipnp), "found");
-    kh_del(conns_by_ipnp, conns_by_ipnp, k);
 }

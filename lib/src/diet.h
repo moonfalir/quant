@@ -54,24 +54,6 @@ struct ival {
 };
 
 
-/// Compare two ival intervals.
-///
-/// @param[in]  a     Interval one.
-/// @param[in]  b     Interval two.
-///
-/// @return     Zero if a is in b or b is in a. Negative if a's lower bound is
-///             less than b's lower bound, positive otherwise.
-///
-static inline int __attribute__((nonnull))
-ival_cmp(const struct ival * const a, const struct ival * const b)
-{
-    if ((a->lo >= b->lo && a->lo <= b->hi) ||
-        (b->lo >= a->lo && b->lo <= a->hi))
-        return 0;
-    return (a->lo > b->lo) - (a->lo < b->lo);
-}
-
-
 splay_head(diet, ival);
 
 
@@ -82,9 +64,6 @@ splay_head(diet, ival);
 #define diet_foreach_rev splay_foreach_rev
 #define diet_next splay_next
 #define diet_prev splay_prev
-
-
-SPLAY_PROTOTYPE(diet, ival, node, ival_cmp)
 
 
 extern struct ival * diet_find(struct diet * const d, const uint64_t n);
@@ -102,6 +81,12 @@ extern void __attribute__((nonnull)) diet_free(struct diet * const d);
 
 extern size_t __attribute__((nonnull))
 diet_to_str(char * const str, const size_t len, struct diet * const d);
+
+extern int __attribute__((nonnull))
+ival_cmp(const struct ival * const a, const struct ival * const b);
+
+
+SPLAY_PROTOTYPE(diet, ival, node, ival_cmp)
 
 
 static inline struct ival * __attribute__((nonnull))

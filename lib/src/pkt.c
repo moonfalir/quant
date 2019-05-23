@@ -941,3 +941,73 @@ bool dec_pkt_hdr_remainder(struct w_iov * const xv,
 
     return true;
 }
+
+
+const char * pkt_type_str(const uint8_t flags, const void * const vers)
+{
+    if (is_lh(flags)) {
+        if (((const uint8_t * const)vers)[0] == 0 &&
+            ((const uint8_t * const)vers)[1] == 0 &&
+            ((const uint8_t * const)vers)[2] == 0 &&
+            ((const uint8_t * const)vers)[3] == 0)
+            return "Version Negotiation";
+        switch (pkt_type(flags)) {
+        case LH_INIT:
+            return "Initial";
+        case LH_RTRY:
+            return "Retry";
+        case LH_HSHK:
+            return "Handshake";
+        case LH_0RTT:
+            return "0-RTT Protected";
+        }
+    } else if (pkt_type(flags) == SH)
+        return "Short";
+    return RED "Unknown" NRM;
+}
+
+
+bool is_lh(const uint8_t flags)
+{
+    return is_set(HEAD_FORM, flags);
+}
+
+
+uint8_t pkt_type(const uint8_t flags)
+{
+    return is_lh(flags) ? flags & LH_TYPE_MASK : SH;
+}
+
+
+uint8_t pkt_nr_len(const uint8_t flags)
+{
+    return (flags & HEAD_PNRL_MASK) + 1;
+}
+
+
+epoch_t epoch_for_pkt_type(const uint8_t type)
+{
+    switch (type) {
+    case LH_INIT:
+    case LH_RTRY:
+        return ep_init;
+    case LH_0RTT:
+        return ep_0rtt;
+    case LH_HSHK:
+        return ep_hshk;
+    default:
+        return ep_data;
+    }
+}
+
+
+struct pn_space * pn_for_pkt_type(struct q_conn * const c, const uint8_t t)
+{
+    return pn_for_epoch(c, epoch_for_pkt_type(t));
+}
+
+
+bool has_pkt_nr(const uint8_t flags, const uint32_t vers)
+{
+    return is_lh(flags) == false || (vers && pkt_type(flags) != LH_RTRY);
+}

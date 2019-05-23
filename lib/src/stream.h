@@ -27,13 +27,11 @@
 
 #pragma once
 
-#include <inttypes.h>
 #include <stdbool.h>
 #include <stdint.h>
 
 #include <warpcore/warpcore.h>
 
-#include "conn.h" // IWYU pragma: keep
 #include "quic.h"
 #include "tls.h"
 
@@ -58,6 +56,7 @@ typedef enum { STRM_STATES } strm_state_t;
 
 extern const char * const strm_state_str[];
 
+struct q_conn;
 
 struct q_stream {
     sl_entry(q_stream) node_ctrl;
@@ -112,69 +111,14 @@ struct q_stream {
 #define is_srv_ini(id) is_set(STRM_FL_SRV, (id))
 
 
-static inline bool __attribute__((nonnull))
-out_fully_acked(const struct q_stream * const s)
-{
-    return s->out_una == 0;
-}
+extern bool __attribute__((nonnull))
+out_fully_acked(const struct q_stream * const s);
 
+extern bool __attribute__((nonnull))
+needs_ctrl(const struct q_stream * const s);
 
-static inline int64_t __attribute__((const)) crpt_strm_id(const epoch_t epoch)
-{
-    switch (epoch) { // lgtm [cpp/missing-return]
-    case ep_init:
-        return -4;
-    case ep_hshk:
-        return -2;
-    case ep_data:
-        return -1;
-    case ep_0rtt:
-        die("unhandled epoch %u", epoch);
-    }
-}
-
-
-static inline epoch_t __attribute__((nonnull))
-strm_epoch(const struct q_stream * const s)
-{
-    if (unlikely(s->id < 0))
-        switch (s->id) {
-        case -4:
-            return ep_init;
-        case -2:
-            return ep_hshk;
-        case -1:
-            return ep_data;
-        default:
-            die("illegal sid %" PRId64, s->id);
-        }
-
-    if (unlikely(s->c->is_clnt == true && s->c->state == conn_opng))
-        return ep_0rtt;
-
-    return ep_data;
-}
-
-
-static inline bool __attribute__((nonnull))
-needs_ctrl(const struct q_stream * const s)
-{
-    return s->tx_max_stream_data || s->blocked;
-}
-
-
-static inline void __attribute__((nonnull))
-need_ctrl_update(struct q_stream * const s)
-{
-    if (unlikely(needs_ctrl(s) != s->in_ctrl)) {
-        if (s->in_ctrl == false)
-            sl_insert_head(&s->c->need_ctrl, s, node_ctrl);
-        else
-            sl_remove(&s->c->need_ctrl, s, q_stream, node_ctrl);
-        s->in_ctrl = !s->in_ctrl;
-    }
-}
-
+extern void __attribute__((nonnull))
+need_ctrl_update(struct q_stream * const s);
 
 extern struct q_stream * __attribute__((nonnull))
 get_stream(struct q_conn * const c, const int64_t id);
@@ -208,3 +152,8 @@ concat_out(struct q_stream * const s, struct w_iov_sq * const q);
 
 extern int64_t __attribute__((nonnull))
 max_sid(const int64_t sid, const struct q_conn * const c);
+
+extern int64_t __attribute__((const)) crpt_strm_id(const epoch_t epoch);
+
+extern epoch_t __attribute__((nonnull))
+strm_epoch(const struct q_stream * const s);

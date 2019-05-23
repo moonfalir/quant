@@ -195,12 +195,5 @@ extern void __attribute__((nonnull)) enc_ping_frame(uint8_t ** pos,
                                                     const uint8_t * const end,
                                                     struct pkt_meta * const m);
 
-static inline bool __attribute__((nonnull))
-is_ack_eliciting(const struct frames * const f)
-{
-    static const struct frames ack_or_pad =
-        bitset_t_initializer(1 << FRM_ACK | 1 << FRM_PAD);
-    struct frames not_ack_or_pad = bitset_t_initializer(0);
-    bit_nand2(FRM_MAX, &not_ack_or_pad, f, &ack_or_pad);
-    return !bit_empty(FRM_MAX, &not_ack_or_pad);
-}
+extern bool __attribute__((nonnull))
+is_ack_eliciting(const struct frames * const f);

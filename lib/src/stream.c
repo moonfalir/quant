@@ -25,6 +25,7 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 
+#include <inttypes.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -50,6 +51,55 @@
 
 
 const char * const strm_state_str[] = {STRM_STATES};
+
+
+int64_t crpt_strm_id(const epoch_t epoch)
+{
+    switch (epoch) { // lgtm [cpp/missing-return]
+    case ep_init:
+        return -4;
+    case ep_hshk:
+        return -2;
+    case ep_data:
+        return -1;
+    case ep_0rtt:
+        die("unhandled epoch %u", epoch);
+    }
+}
+
+
+epoch_t strm_epoch(const struct q_stream * const s)
+{
+    if (unlikely(s->id < 0))
+        switch (s->id) {
+        case -4:
+            return ep_init;
+        case -2:
+            return ep_hshk;
+        case -1:
+            return ep_data;
+        default:
+            die("illegal sid %" PRId64, s->id);
+        }
+
+    if (unlikely(s->c->is_clnt == true && s->c->state == conn_opng))
+        return ep_0rtt;
+
+    return ep_data;
+}
+
+
+void need_ctrl_update(struct q_stream * const s)
+{
+    if (unlikely(needs_ctrl(s) != s->in_ctrl)) {
+        if (s->in_ctrl == false)
+            sl_insert_head(&s->c->need_ctrl, s, node_ctrl);
+        else
+            sl_remove(&s->c->need_ctrl, s, q_stream, node_ctrl);
+        s->in_ctrl = !s->in_ctrl;
+    }
+}
+
 
 struct q_stream * get_stream(struct q_conn * const c, const int64_t id)
 {
@@ -274,4 +324,16 @@ void concat_out(struct q_stream * const s, struct w_iov_sq * const q)
 bool q_is_uni_stream(const struct q_stream * const s)
 {
     return is_uni(s->id);
+}
+
+
+bool out_fully_acked(const struct q_stream * const s)
+{
+    return s->out_una == 0;
+}
+
+
+bool needs_ctrl(const struct q_stream * const s)
+{
+    return s->tx_max_stream_data || s->blocked;
 }

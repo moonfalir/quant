@@ -29,9 +29,7 @@
 
 #include <inttypes.h>
 #include <stdbool.h>
-#include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 #include <sys/param.h>
 
 #include <ev.h>
@@ -363,56 +361,25 @@ write_to_corpus(const int dir, const void * const data, const size_t len);
     })
 
 
-static inline int __attribute__((nonnull))
-cids_by_seq_cmp(const struct cid * const a, const struct cid * const b)
-{
-    return (a->seq > b->seq) - (a->seq < b->seq);
-}
+extern int __attribute__((nonnull))
+cids_by_seq_cmp(const struct cid * const a, const struct cid * const b);
 
+extern void __attribute__((nonnull))
+cid_cpy(struct cid * const dst, const struct cid * const src);
 
-static inline void __attribute__((nonnull))
-cid_cpy(struct cid * const dst, const struct cid * const src)
-{
-    memcpy((uint8_t *)dst + offsetof(struct cid, seq),
-           (const uint8_t *)src + offsetof(struct cid, seq),
-           sizeof(struct cid) - offsetof(struct cid, seq) -
-               sizeof(src->_unused));
-}
+extern void __attribute__((nonnull)) pm_cpy(struct pkt_meta * const dst,
+                                            const struct pkt_meta * const src,
+                                            const bool also_frame_info);
 
+extern int __attribute__((nonnull))
+ooo_by_off_cmp(const struct pkt_meta * const a,
+               const struct pkt_meta * const b);
 
-static inline void __attribute__((nonnull))
-pm_cpy(struct pkt_meta * const dst,
-       const struct pkt_meta * const src,
-       const bool also_frame_info)
-{
-    const size_t off = also_frame_info ? offsetof(struct pkt_meta, stream)
-                                       : offsetof(struct pkt_meta, tx_t);
-    memcpy((uint8_t *)dst + off, (const uint8_t *)src + off,
-           sizeof(*dst) - off);
-}
+extern void __attribute__((nonnull))
+adj_iov_to_start(struct w_iov * const v, const struct pkt_meta * const m);
 
-
-static inline int __attribute__((nonnull))
-ooo_by_off_cmp(const struct pkt_meta * const a, const struct pkt_meta * const b)
-{
-    return (a->stream_off > b->stream_off) - (a->stream_off < b->stream_off);
-}
-
-
-static inline void __attribute__((nonnull))
-adj_iov_to_start(struct w_iov * const v, const struct pkt_meta * const m)
-{
-    v->buf -= m->stream_data_start;
-    v->len += m->stream_data_start;
-}
-
-
-static inline void __attribute__((nonnull))
-adj_iov_to_data(struct w_iov * const v, const struct pkt_meta * const m)
-{
-    v->buf += m->stream_data_start;
-    v->len -= m->stream_data_start;
-}
+extern void __attribute__((nonnull))
+adj_iov_to_data(struct w_iov * const v, const struct pkt_meta * const m);
 
 
 splay_head(ooo_by_off, pkt_meta);

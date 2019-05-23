@@ -37,6 +37,7 @@
 #include <string.h>
 #include <sys/param.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 
 // IWYU pragma: no_include <picotls/../picotls.h>
 
@@ -1829,4 +1830,116 @@ void conn_info_populate(struct q_conn * const c)
     c->i.ssthresh = c->rec.ssthresh;
     c->i.rtt = c->rec.srtt;
     c->i.rttvar = c->rec.rttvar;
+}
+
+
+bool has_pval_wnd(const struct q_conn * const c, const uint16_t len)
+{
+    if (unlikely(c->out_data + len >= c->path_val_win)) {
+        warn(DBG,
+             "%s conn %s path val lim reached: %" PRIu64 " + %u >= %" PRIu64,
+             conn_type(c), cid2str(c->scid), c->out_data, len, c->path_val_win);
+        return false;
+    }
+
+    return true;
+}
+
+
+bool has_wnd(const struct q_conn * const c, const uint16_t len)
+{
+    if (unlikely(c->blocked)) {
+        warn(DBG, "%s conn %s is blocked", conn_type(c), cid2str(c->scid));
+        return false;
+    }
+
+    if (unlikely(c->rec.in_flight + len >= c->rec.cwnd)) {
+        warn(DBG,
+             "%s conn %s cwnd lim reached: in_flight %" PRIu64
+             " + %u >= %" PRIu64,
+             conn_type(c), cid2str(c->scid), c->rec.in_flight, len,
+             c->rec.cwnd);
+        return false;
+    }
+
+    return has_pval_wnd(c, len);
+}
+
+
+bool needs_more_ncids(struct q_conn * const c)
+{
+    const struct cid * const max_scid =
+        splay_max(cids_by_seq, &c->scids_by_seq);
+    return splay_count(&c->scids_by_seq) <= 8 ||
+           (max_scid && c->max_cid_seq_out < max_scid->seq);
+}
+
+
+uint64_t conns_by_ipnp_key(const struct sockaddr * const src,
+                           const struct sockaddr * const dst)
+{
+    const struct sockaddr_in * const src4 =
+        (const struct sockaddr_in *)(const void *)src;
+    const struct sockaddr_in * const dst4 =
+        (const struct sockaddr_in *)(const void *)dst;
+
+    return ((uint64_t)dst4->sin_addr.s_addr
+            << sizeof(dst4->sin_addr.s_addr) * 8) |
+           ((uint64_t)src4->sin_port << sizeof(src4->sin_port) * 8) |
+           (uint64_t)dst4->sin_port;
+}
+
+
+void conns_by_ipnp_ins(struct q_conn * const c)
+{
+    int ret;
+    const khiter_t k =
+        kh_put(conns_by_ipnp, conns_by_ipnp,
+               (khint64_t)conns_by_ipnp_key(w_get_addr(c->sock, true),
+                                            (struct sockaddr *)&c->peer),
+               &ret);
+    ensure(ret >= 1, "inserted returned %d", ret);
+    kh_val(conns_by_ipnp, k) = c;
+}
+
+
+void conns_by_ipnp_del(const struct q_conn * const c)
+{
+    const khiter_t k =
+        kh_get(conns_by_ipnp, conns_by_ipnp,
+               (khint64_t)conns_by_ipnp_key(w_get_addr(c->sock, true),
+                                            (const struct sockaddr *)&c->peer));
+    ensure(k != kh_end(conns_by_ipnp), "found");
+    kh_del(conns_by_ipnp, conns_by_ipnp, k);
+}
+
+
+khint_t hash_cid(const struct cid * const id)
+{
+    return fnv1a_32(id->id, id->len);
+}
+
+
+int cid_cmp(const struct cid * const a, const struct cid * const b)
+{
+    // if the lengths are different, memcmp will fail on the first byte
+    return memcmp(&a->len, &b->len, a->len + sizeof(a->len));
+}
+
+
+int kh_cid_cmp(const struct cid * const a, const struct cid * const b)
+{
+    return cid_cmp(a, b) == 0;
+}
+
+
+khint_t hash_srt(const uint8_t * const srt)
+{
+    return fnv1a_32(srt, SRT_LEN);
+}
+
+
+int kh_srt_cmp(const uint8_t * const a, const uint8_t * const b)
+{
+    return memcmp(a, b, SRT_LEN) == 0;
 }
