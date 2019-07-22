@@ -11,7 +11,7 @@ pool:
 
 steps:
 - script:
-    apt-get -y install git cmake libssl-dev g++ libhttp-parser-dev pkg-config 
+    sudo apt-get -y install git cmake libssl-dev g++ libhttp-parser-dev pkg-config 
   displayName: 'apt'
 - script:
     mkdir build
