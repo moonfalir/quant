@@ -13,8 +13,8 @@ steps:
 - script:
     sudo apt-get -y install git cmake libssl-dev g++ libhttp-parser-dev pkg-config 
   displayName: 'apt'
-- script:
-    mkdir -p build
+- script: |
+    mkdir build
     cd build
     cmake ..
     make
