@@ -77,7 +77,7 @@ struct q_stream; // IWYU pragma: no_forward_declare q_stream
 #define ERR_TLS(type) (0x100 + (type))
 
 
-#define default_max_pkt_len(af) ((af) == AF_INET ? 1252 : 1232)
+#define default_max_pkt_len(af) ((af) == AF_INET ? 1280: 1232)
 
 
 static inline bool __attribute__((const, no_instrument_function))
