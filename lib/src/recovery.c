@@ -311,6 +311,9 @@ void on_pkt_lost(struct pkt_meta * const m, const bool is_lost)
                     case FRM_HSD:
                         c->tx_hshk_done = true;
                         break;
+                    case FRM_TOK:
+                        c->tx_new_tok = true;
+                        break;
                     default:
                         warn(CRT, "unhandled RTX of 0x%02x frame", i);
                     }

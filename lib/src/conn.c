@@ -490,8 +490,8 @@ static void __attribute__((nonnull)) do_conn_mgmt(struct q_conn * const c)
 
     // do we need to make more stream IDs available?
     if (likely(c->state == conn_estb)) {
-        if (!is_clnt(c) &&
-            unlikely(c->tok_len == 0 && c->pns[ep_init].abandoned))
+        if (!is_clnt(c) && unlikely(c->tx_new_tok && c->tok_len == 0 &&
+                                    c->pns[ep_init].abandoned))
             // TODO: find a better way to send NEW_TOKEN
             make_rtry_tok(c);
 
@@ -1243,6 +1243,7 @@ static void __attribute__((nonnull))
         struct w_iov * const v = alloc_iov(ws->w, ws->ws_af, 0, 0, &m);
         v->saddr = xv->saddr;
         v->flags = xv->flags;
+        v->ttl = xv->ttl;
         v->len = xv->len; // this is just so that log_pkt can show the rx len
         m->t = loop_now();
 
@@ -1432,7 +1433,8 @@ static void __attribute__((nonnull))
                              ? "crypto fail on"
                              : "rx invalid",
                          v->len, pkt_type_str(m->hdr.flags, &m->hdr.vers));
-                    // typically happens if we don't have keys yet, shortcut RTX
+                    // typically happens if we don't have keys yet or we have
+                    // abandoned the pn space, shortcut RTX
                     c->tx_limit = 1;
                     timeouts_add(ped(c->w)->wheel, &c->tx_w, 0);
                 }
@@ -1889,10 +1891,11 @@ struct q_conn * new_conn(struct w_engine * const w,
         }
     }
 
+    c->sockopt.enable_ecn = true;
+    c->sockopt.enable_udp_zero_checksums =
+        get_conf_uncond(c->w, conf, enable_udp_zero_checksums);
+
     if (is_clnt(c) || peer == 0) {
-        c->sockopt.enable_ecn = true;
-        c->sockopt.enable_udp_zero_checksums =
-            get_conf_uncond(c->w, conf, enable_udp_zero_checksums);
         c->sock = w_bind(w, idx, port, &c->sockopt);
         if (unlikely(c->sock == 0))
             goto fail;
@@ -1943,6 +1946,8 @@ struct q_conn * new_conn(struct w_engine * const w,
     init_rec(c);
     if (is_clnt(c))
         c->path_val_win = UINT_T_MAX;
+    else
+        c->tx_new_tok = true;
 
     // start a TX watcher
     timeout_init(&c->tx_w, TIMEOUT_ABS);

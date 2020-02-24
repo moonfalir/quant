@@ -74,32 +74,9 @@ logging enabled. In order to build an optimized build, do this:
 (I really recommend [Ninja](https://ninja-build.org/) over `make`.)
 
 
-## Building for RIOT
+## Building for RIOT or Particle
 
-The [RIOT](http://riot-os.org/) build is at the moment highly experimental and
-has only been tested with an [ESP32
-devkit](https://docs.espressif.com/projects/esp-idf/en/latest/hw-reference/get-started-devkitc.html).
-You can build a sample client and install it on an ESP32 as follows. You will
-need to have the [riotdocker](https://github.com/RIOT-OS/riotdocker) image
-installed and the `ESP32_SDK_DIR` environment variable needs to point to your
-[ESP-IDF](https://api.riot-os.org/group__cpu__esp32.html) installation:
-
-    cd riot
-    make BUILD_IN_DOCKER=1 flash term
-
-
-## Building for Particle
-
-The [Particle](https://github.com/particle-iot/device-os) build is also highly
-experimental and has only been tested with an [Argon](https://docs.particle.io/datasheets/wi-fi/argon-datasheet/).
-You can build a sample client and install it on an Argon as follows. You will
-need to have the [po](https://github.com/nrobinson2000/po) toolchain
-installed:
-
-    cd particle
-    po argon build
-    po argon flash
-    particle serial monitor
+Please see `README.md` in the `riot` and `particle` subdirectories.
 
 
 ## Docker container

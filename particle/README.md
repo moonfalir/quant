@@ -1,27 +1,53 @@
-[![Built with po-util](https://rawgit.com/nrobinson2000/po-util/master/images/built-with-po-util.svg)](https://po-util.com)
+[![Built with
+po-util](https://rawgit.com/nrobinson2000/po-util/master/images/built-with-po-util.svg)](https://po-util.com)
 
-# This repository is a [po-util](https://po-util.com) project
+# Quant for [Particle.io](https://docs.particle.io/) boards
 
-Po makes it easy to locally develop firmware for Particle devices, and supports the Particle Photon, P1, Electron, Core, Raspberry Pi, and Redbear Duo.
+This directory has the build scaffolding to compile a simple, minimal Quant
+client for [Particle.io](https://docs.particle.io/) boards, using
+[po](https://po-util.com) as the build system. So you need to install `po`
+first.
 
-Your project’s C++ files go in the `firmware/` directory, and the binary will appear in the `bin/` directory.
+The source files are in `firmware/`, and the resulting binary will appear in the
+`bin/` directory. Most of the minimal client functionality is shared with the
+[RIOT-OS](https://www.riot-os.org/) client, and resides in
+`../test/minimal-transaction.c`. You will likely want to modify
+`../test/minimal-transaction.c`, since by default it performs a `GET /5000` with
+`quant.eggert.org` and nothing else.
 
-To compile code, run `po DEVICE_TYPE build`, substituting `DEVICE_TYPE` with `photon`, `P1`, `electron`, `core`, `pi`, or `duo`.
+## Building
 
-To compile and flash code, run `po DEVICE_TYPE flash`. Code is compiled and then flashed to your device over USB.
+To compile code, run `po DEVICE_TYPE build`, substituting `DEVICE_TYPE` with the
+desired device type, e.g., `photon`, `P1`, `electron`, `core`, `pi`, or `duo`.
+Note that I have only tested Quant on the [Particle
+Argon](https://docs.particle.io/argon/) (`argon`) and it will likely require
+modifications for other boards.
 
 To clean the project, run `po DEVICE_TYPE clean`.
 
+Quant should build with [DeviceOS](https://github.com/particle-iot/device-os)
+version 1.5.0 or higher. Note that `po` by default uses the `develop` branch of
+[DeviceOS](https://github.com/particle-iot/device-os), which may or may not
+work. Use `po config` to switch branches.
+
+## Flashing
+
+To compile and flash code, run `po DEVICE_TYPE flash`. Code is compiled and then
+flashed to your device over USB.
+
 To flash a project over USB without rebuilding, run `po DEVICE_TYPE dfu`.
 
-To upload a compiled project over the air run `po DEVICE ota DEVICE_NAME`, where `DEVICE_NAME` is the name of your device in the Particle cloud. **Note: You must be logged into particle-cli to use this feature. You can log into particle-cli with:**
+## Debug output
 
-```
-particle login
-```
+To connect to the serial console after flashing, run `particle serial monitor`.
 
-For more help, run `man po`, or visit <https://docs.po-util.com/>
+## Development and contributing
 
-*By the way, po has tab completion. Try pressing [TAB] at any time to have arguments completed.*
+I'm happy to merge contributions that fix
+[bugs](https://github.com/NTAP/quant/issues?q=is%3Aopen+is%3Aissue+label%3Abug)
+or add
+[features](https://github.com/NTAP/quant/issues?q=is%3Aopen+is%3Aissue+label%3Aenhancement).
+Please send pull requests.
 
-Feel free to edit this README.md to make it more suitable for your project. **(I do ask that you please include the badge at the top though.)**
+(Contributions to the underlying [warpcore](https://github.com/NTAP/warpcore)
+stack are also very welcome.)

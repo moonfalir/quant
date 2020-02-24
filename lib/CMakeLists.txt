@@ -59,9 +59,9 @@ foreach(TARGET ${TARGETS})
                 ${CMAKE_CURRENT_BINARY_DIR}/src/config.c)
 
     if(${TARGET} MATCHES ".*-warp")
-      target_link_libraries(${TARGET} warpcore)
+      target_link_libraries(${TARGET} PUBLIC warpcore)
     else()
-      target_link_libraries(${TARGET} sockcore)
+      target_link_libraries(${TARGET} PUBLIC sockcore)
     endif()
 
     if(DSYMUTIL AND BUILD_SHARED_LIBS)
@@ -86,7 +86,7 @@ foreach(TARGET ${TARGETS})
     else()
       set(CRYPTOLIBS picotls-minicrypto)
     endif()
-    target_link_libraries(${TARGET} m picotls-core ${CRYPTOLIBS})
+    target_link_libraries(${TARGET} PRIVATE m picotls-core ${CRYPTOLIBS})
 
     if(${TARGET} MATCHES ".*quant")
       install(DIRECTORY include/${PROJECT_NAME}

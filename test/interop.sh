@@ -36,16 +36,18 @@ if [ "$ROLE" == "client" ]; then
     "resumption")
         REQS=($REQUESTS)
         REQUESTS=${REQS[0]}
-        /usr/local/bin/client $CLIENT_ARGS $REQUESTS >> "/logs/$ROLE.log" 2>&1
-        echo "XXX $ROLE DONE" >> "/logs/$ROLE.log"
+        /usr/local/bin/client $CLIENT_ARGS $REQUESTS 2>&1 | \
+            tee -a "/logs/$ROLE.log"
+        echo "XXX $ROLE DONE" | tee -a "/logs/$ROLE.log"
         REQUESTS=${REQS[@]:1}
         ;;
     "multiconnect")
         for req in $REQUESTS; do
             ((skip++))
             /usr/local/bin/client -t 20 $CLIENT_ARGS \
-                -q "$QLOGDIR/$ROLE.$skip.qlog" $req >> "/logs/$ROLE.log" 2>&1
-            echo "XXX $ROLE DONE" >> "/logs/$ROLE.log"
+                -q "$QLOGDIR/$ROLE.$skip.qlog" $req 2>&1 | \
+                tee -a "/logs/$ROLE.log"
+            echo "XXX $ROLE DONE" | tee -a "/logs/$ROLE.log"
         done
         ;;
     *)
@@ -53,8 +55,9 @@ if [ "$ROLE" == "client" ]; then
     esac
 
     if [ $skip -eq 0 ]; then
-        /usr/local/bin/client $CLIENT_ARGS $REQUESTS >> "/logs/$ROLE.log" 2>&1
-        echo "XXX $ROLE DONE" >> "/logs/$ROLE.log"
+        /usr/local/bin/client $CLIENT_ARGS $REQUESTS 2>&1 | \
+            tee -a "/logs/$ROLE.log"
+        echo "XXX $ROLE DONE" | tee -a "/logs/$ROLE.log"
     fi
 
 elif [ "$ROLE" == "server" ]; then
@@ -67,9 +70,9 @@ elif [ "$ROLE" == "server" ]; then
     esac
 
     /usr/local/bin/server $SERVER_ARGS -i eth0 -d /www -p 443 -p 4434 -t 0 \
-        -c /tls/dummy.crt -k /tls/dummy.key -q "$QLOGDIR/$ROLE.qlog" \
-            >> "/logs/$ROLE.log" 2>&1
-    echo "XXX $ROLE DONE" >> "/logs/$ROLE.log"
+        -c /tls/dummy.crt -k /tls/dummy.key -q "$QLOGDIR/$ROLE.qlog" 2>&1 \
+            | tee -a "/logs/$ROLE.log"
+    echo "XXX $ROLE DONE" | tee -a "/logs/$ROLE.log"
 fi
 
 sed 's,\x1B\[[0-9;]*[a-zA-Z],,g' "/logs/$ROLE.log" > "/logs/$ROLE.log.txt"

@@ -218,7 +218,8 @@ struct q_conn {
     uint32_t do_qr_test : 1;        ///< Perform quantum-readiness test.
     uint32_t tx_hshk_done : 1;      ///< Send HANDSHAKE_DONE.
     uint32_t in_c_zcid : 1;
-    uint32_t : 3;
+    uint32_t tx_new_tok : 1; ///< Send NEW_TOKEN.
+    uint32_t : 2;
 
     conn_state_t state; ///< State of the connection.
 
@@ -496,7 +497,7 @@ has_wnd(const struct q_conn * const c, const uint16_t len)
         return false;
     }
 
-    return has_pval_wnd(c, len);
+    return is_clnt(c) ? true : has_pval_wnd(c, len);
 }
 
 

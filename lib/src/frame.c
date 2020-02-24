@@ -209,12 +209,21 @@ get_and_validate_strm(struct q_conn * const c,
     } while (0)
 #endif
 
+
+#ifndef NDEBUG
 #define track_sd_frame(knd, dsp)                                               \
     do {                                                                       \
         kind = concat(sdt_, knd);                                              \
         ignore = (dsp);                                                        \
         incr_q_info(knd);                                                      \
     } while (0)
+#else
+#define track_sd_frame(knd, dsp)                                               \
+    do {                                                                       \
+        ignore = (dsp);                                                        \
+        incr_q_info(knd);                                                      \
+    } while (0)
+#endif
 
 
 #define strm_data_len_adj(sdl) ((sdl) - ((sdl) ? 1 : 0))
@@ -273,7 +282,9 @@ dec_stream_or_crypto_frame(const uint8_t type,
 
     // deliver data into stream
     bool ignore = false;
+#ifndef NDEBUG
     strm_data_type_t kind = sdt_ign;
+#endif
 
     if (unlikely(m->strm_data_len == 0 && !is_set(F_STREAM_FIN, type))) {
 #ifdef DEBUG_EXTRA
@@ -410,12 +421,8 @@ dec_stream_or_crypto_frame(const uint8_t type,
     }
 
     struct pkt_meta * p = splay_min(ooo_by_off, &m->strm->in_ooo);
-    while (p &&
-           p->strm_off + strm_data_len_adj(p->strm_data_len) < m->strm_off) {
-        warn(DBG, "check ooo off=%" PRIu " len=%u", p->strm_off,
-             p->strm_data_len);
+    while (p && p->strm_off + strm_data_len_adj(p->strm_data_len) < m->strm_off)
         p = splay_next(ooo_by_off, &m->strm->in_ooo, p);
-    }
 
     // right edge of p >= left edge of v
     if (p && p->strm_off <= m->strm_off + strm_data_len_adj(m->strm_data_len)) {
@@ -516,13 +523,11 @@ static bool __attribute__((nonnull)) dec_ack_frame(const uint8_t type,
     uint_t ack_delay = ack_delay_raw << ade;
 
     if (unlikely(ack_delay_raw &&
-                 (m->hdr.type == LH_INIT || m->hdr.type == LH_HSHK))) {
+                 (m->hdr.type == LH_INIT || m->hdr.type == LH_HSHK)))
         warn(WRN,
-             "ack_delay %" PRIu
-             " usec is not zero in Initial or Handshake ACK; ignoring",
+             "ack_delay %" PRIu " usec is not zero in Initial or Handshake ACK",
              ack_delay);
-        ack_delay = 0;
-    } else if (unlikely(ack_delay > 1.5 * c->tp_peer.max_ack_del * US_PER_MS))
+    else if (unlikely(ack_delay > 1.5 * c->tp_peer.max_ack_del * US_PER_MS))
         warn(WRN, "ack_delay %" PRIu " > max_ack_del %" PRIu, ack_delay,
              c->tp_peer.max_ack_del * US_PER_MS);
 
@@ -1894,7 +1899,7 @@ void enc_new_token_frame(struct q_conn_info * const ci,
                          const uint8_t * const end,
                          struct pkt_meta * const m)
 {
-    const struct q_conn * const c = m->pn->c;
+    struct q_conn * const c = m->pn->c;
     enc1(pos, end, FRM_TOK);
     encv(pos, end, c->tok_len);
     encb(pos, end, c->tok, c->tok_len);
@@ -1902,6 +1907,7 @@ void enc_new_token_frame(struct q_conn_info * const ci,
     warn(INF, FRAM_OUT "NEW_TOKEN" NRM " len=%u tok=%s", c->tok_len,
          tok_str(c->tok, c->tok_len));
 
+    c->tx_new_tok = false;
     track_frame(m, ci, FRM_TOK, 1);
 }
 

@@ -26,6 +26,7 @@
 // POSSIBILITY OF SUCH DAMAGE.
 
 #include <assert.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -392,8 +393,8 @@ static int filter_tp(ptls_t * tls __attribute__((unused)),
 static bool __attribute__((nonnull))
 dec_tp(uint_t * const val, const uint8_t ** pos, const uint8_t * const end)
 {
-    uint16_t len;
-    if (dec2(&len, pos, end) == false)
+    uint64_t len;
+    if (decv(&len, pos, end) == false)
         return false;
     if (len) {
         uint64_t v = 0;
@@ -420,15 +421,6 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
     const uint8_t * pos = (const uint8_t *)slots[0].data.base;
     const uint8_t * const end = pos + slots[0].data.len;
 
-    uint16_t tpl;
-    if (dec2(&tpl, &pos, end) == false)
-        return 1;
-    if (tpl != slots[0].data.len - sizeof(tpl)) {
-        err_close(c, ERR_TRANSPORT_PARAMETER, FRM_CRY, "tp len %u incorrect",
-                  tpl);
-        return 1;
-    }
-
     // keep track of which transport parameters we've seen before
     bitset_define(tp_list, TP_MAX);
     struct tp_list tp_list = bitset_t_initializer(0);
@@ -436,16 +428,17 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
     c->tp_peer.act_cid_lim = UINT_T_MAX;
     c->tp_peer.max_pkt = MAX_PKT_LEN;
     while (pos < end) {
-        uint16_t tp;
-        if (dec2(&tp, &pos, end) == false)
+        uint64_t tp;
+        if (decv(&tp, &pos, end) == false)
             return 1;
 
         // skip unknown TPs
         if (tp >= TP_MAX) {
-            uint16_t unknown_len;
-            if (dec2(&unknown_len, &pos, end) == false)
+            uint64_t unknown_len;
+            if (decv(&unknown_len, &pos, end) == false)
                 return 1;
-            warn(WRN, "\t" BLD "%s tp" NRM " (0x%04x w/len %u) = %s",
+            warn(WRN,
+                 "\t" BLD "%s tp" NRM " (0x%" PRIx64 " w/len %" PRIu64 ") = %s",
                  (tp & 0xff00) == 0xff00
                      ? YEL "private"
                      : (tp == TP_QR ? RED "quantum-ready" : RED "unknown"),
@@ -563,11 +556,11 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
                 return 1;
             }
 
-            uint16_t len;
-            if (dec2(&len, &pos, end) == false)
+            uint64_t len;
+            if (decv(&len, &pos, end) == false)
                 return 1;
             if (len) {
-                decb(c->tp_peer.orig_cid.id, &pos, end, len);
+                decb(c->tp_peer.orig_cid.id, &pos, end, (uint16_t)len);
                 c->tp_peer.orig_cid.len = (uint8_t)len;
             }
             warn(INF, "\toriginal_connection_id = %s",
@@ -588,8 +581,8 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
                           "rx stateless_reset_token tp at serv");
                 return 1;
             }
-            uint16_t l;
-            if (dec2(&l, &pos, end) == false)
+            uint64_t l;
+            if (decv(&l, &pos, end) == false)
                 return 1;
 #ifndef NO_SRT_MATCHING
             struct cid * const dcid = c->dcid;
@@ -611,7 +604,7 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
             break;
 
         case TP_PRFA:
-            if (dec2(&l, &pos, end) == false)
+            if (decv(&l, &pos, end) == false)
                 return 1;
             const uint8_t * const e = pos + l;
 
@@ -698,8 +691,8 @@ static void __attribute__((nonnull)) enc_tp(uint8_t ** pos,
                                             const uint16_t tp,
                                             const uint_t val)
 {
-    enc2(pos, end, tp);
-    enc2(pos, end, varint_size(val));
+    encv(pos, end, tp);
+    encv(pos, end, varint_size(val));
     encv(pos, end, val);
 }
 
@@ -710,8 +703,8 @@ static void __attribute__((nonnull(1, 2))) encb_tp(uint8_t ** pos,
                                                    const uint8_t * const val,
                                                    const uint16_t len)
 {
-    enc2(pos, end, tp);
-    enc2(pos, end, len);
+    encv(pos, end, tp);
+    encv(pos, end, len);
     if (val)
         encb(pos, end, val, len);
 }
@@ -725,7 +718,7 @@ void init_tp(struct q_conn * const c)
 #define TP_LEN 192
 #endif
 
-    uint8_t * pos = c->tls.tp_buf + sizeof(uint16_t);
+    uint8_t * pos = c->tls.tp_buf;
     const uint8_t * end = c->tls.tp_buf + TP_LEN;
 
     // add a grease tp
@@ -921,13 +914,8 @@ void init_tp(struct q_conn * const c)
             break;
         }
 
-    // encode length of all transport parameters
-    const uint16_t enc_len = (uint16_t)(pos - c->tls.tp_buf) - sizeof(uint16_t);
-    pos = c->tls.tp_buf;
-    enc2(&pos, end, enc_len);
-
     c->tls.tp_ext[0] = (ptls_raw_extension_t){
-        QUIC_TP, {c->tls.tp_buf, enc_len + sizeof(uint16_t)}};
+        QUIC_TP, {c->tls.tp_buf, (uint16_t)(pos - c->tls.tp_buf)}};
     c->tls.tp_ext[1] = (ptls_raw_extension_t){UINT16_MAX};
 }
 
@@ -1029,10 +1017,10 @@ static int save_ticket_cb(ptls_save_ticket_t * self __attribute__((unused)),
                           ptls_iovec_t src)
 {
     struct q_conn * const c = *ptls_get_data_ptr(tls);
-    const char * const ticket_store = ped(c->w)->conf.ticket_store;
-    warn(NTE, "saving TLS tickets to %s", ticket_store);
 
 #if !defined(PARTICLE) && !defined(RIOT_VERSION)
+    const char * const ticket_store = ped(c->w)->conf.ticket_store;
+    warn(NTE, "saving TLS tickets to %s", ticket_store);
     FILE * const fp = fopen(ticket_store, "wbe");
     ensure(fp, "could not open ticket file %s", ticket_store);
 
@@ -1735,6 +1723,11 @@ void make_rtry_tok(struct q_conn * const c)
     memcpy(&c->tok[cs->hash->digest_size], scid->id, scid->len);
     // update max_frame_len() when this changes:
     c->tok_len = (uint16_t)cs->hash->digest_size + scid->len;
+    // #ifdef DEBUG_PROT
+    warn(DBG, "computed Retry tok %s",
+         hex2str(c->tok, c->tok_len, (char[hex_str_len(MAX_TOK_LEN)]){""},
+                 hex_str_len(c->tok_len)));
+    // #endif
 }
 
 
@@ -1751,11 +1744,23 @@ bool verify_rtry_tok(struct q_conn * const c,
     uint8_t buf[PTLS_MAX_DIGEST_SIZE + CID_LEN_MAX];
     hc->final(hc, buf, PTLS_HASH_FINAL_MODE_FREE);
 
+    // #ifdef DEBUG_PROT
+    warn(DBG, "computed Retry tok %s",
+         hex2str(buf, cs->hash->digest_size,
+                 (char[hex_str_len(MAX_TOK_LEN)]){""},
+                 hex_str_len(cs->hash->digest_size)));
+    // #endif
     if (memcmp(buf, tok, cs->hash->digest_size) == 0) {
         c->odcid.len = (uint8_t)(tok_len - cs->hash->digest_size);
         memcpy(&c->odcid.id, tok + cs->hash->digest_size, c->odcid.len);
         return true;
     }
+    // #ifdef DEBUG_PROT
+    warn(DBG, "rx'ed Retry tok %s",
+         hex2str(tok, cs->hash->digest_size,
+                 (char[hex_str_len(MAX_TOK_LEN)]){""},
+                 hex_str_len(cs->hash->digest_size)));
+    // #endif
     return false;
 }
 

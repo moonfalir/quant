@@ -1,13 +1,14 @@
           live fail vneg hshk data clse rsmt zrtt rtry qrdy migr bind adrm kyph spin aecn zcid http
 aioquic   *         V    H    D    C    R    Z    S    Q    M    B         U    P         O    3
+akamai    *         V    H    D    C    R                                       P              3
 ats       *         V    H    D    C    R    Z    S    Q    M    B                        O    3
-f5
+f5        *         V    H    D    C    R    Z    S    Q                   U         E    O    3
 google    *    x    V    H    D    C    R              Q                        P         O    3
-haskell   *         V    H                                                                     3
+haskell   *         V    H    D    C    R    Z    S    Q    M    B                        O    3
 lsquic    *         V    H    D    C    R    Z    S    Q    M    B         U    P    E    O    3
 mvfst     *         V    H    D    C    R    Z         Q    M    B                        O    3
 ngtcp2    *         V    H    D    C    R    Z    S    Q    M    B         U              O    3
-ngx_quic  *    x    V    H    D    C    R    Z         Q                                  O    3
+ngx_quic  *         V    H    D    C    R    Z         Q                                  O    3
 pandora   *         v
 picoquic  *         V    H    D    C    R    Z    S    Q    M    B         U    P         O    3
 quant     *    x    V    H    D    C    R    Z    S    Q    M    B         U    P    E    O

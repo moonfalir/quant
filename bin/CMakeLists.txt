@@ -32,7 +32,7 @@ foreach(TARGET ${TARGETS})
   if(${TARGET} MATCHES ".*-warp")
     string(REGEX REPLACE "-warp$" "" SOURCE ${TARGET})
     add_executable(${TARGET} ${SOURCE}.c)
-    target_link_libraries(${TARGET}
+    target_link_libraries(${TARGET} PRIVATE
       lib${PROJECT_NAME}-warp
       ${HTTP_PARSER_LIB}
       picohttp-core
@@ -43,7 +43,7 @@ foreach(TARGET ${TARGETS})
     )
   else()
     add_executable(${TARGET} ${TARGET}.c)
-    target_link_libraries(${TARGET}
+    target_link_libraries(${TARGET} PRIVATE
       lib${PROJECT_NAME}
       ${HTTP_PARSER_LIB}
       picohttp-core

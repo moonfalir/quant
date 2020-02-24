@@ -1,5 +1,8 @@
 set_property(DIRECTORY . APPEND PROPERTY COMPILE_DEFINITIONS ${DEFINES})
 
+# FIXME: gcc-9 release builds fail with internal link error with IPO on
+set(IPO False)
+
 configure_file(test_public_servers.sh test_public_servers.sh COPYONLY)
 configure_file(test_public_servers.result test_public_servers.result COPYONLY)
 add_test(test_public_servers.sh test_public_servers.sh)
@@ -7,7 +10,9 @@ add_test(test_public_servers.sh test_public_servers.sh)
 foreach(TARGET diet conn hex2str)
   add_executable(test_${TARGET} test_${TARGET}.c
     ${CMAKE_CURRENT_BINARY_DIR}/dummy.key ${CMAKE_CURRENT_BINARY_DIR}/dummy.crt)
-  target_link_libraries(test_${TARGET} lib${PROJECT_NAME} picotls-minicrypto)
+  target_link_libraries(test_${TARGET}
+    PRIVATE lib${PROJECT_NAME} picotls-minicrypto
+  )
   target_include_directories(test_${TARGET}
     PRIVATE
       ${PROJECT_BINARY_DIR}/external/include

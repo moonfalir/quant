@@ -29,13 +29,14 @@
 
 
 declare -A servers=(
-    # [tag]="name|flags|port|retry-port|h3-port|URL"
+    # # [tag]="name|flags|port|retry-port|h3-port|URL"
     [aioquic]="quic.aiortc.org||443|4434|443|/40000"
+    [akamai]="ietf.akaquic.com|-3|443|443|443|/100k"
     # [apple]="[2a00:79e1:abc:301:18c7:dac8:b9c6:f91f]|-3|4433|4433|4433|/40000"
     [ats]="quic.ogre.com||4433|4434|4433|/en/latest/_static/jquery.js"
     [f5]="f5quic.com|-3|4433|4433|4433|/50000"
     [google]="quic.rocks|-3|4433|4434|4433|/40000"
-    [haskell]="mew.org||4433|4433|4433|/40000"
+    [haskell]="mew.org|-3|4433|4433|4433|/40000"
     [lsquic]="http3-test.litespeedtech.com|-3|4433|4434|4433|/40000"
     [mvfst]="fb.mvfst.net|-3|443|4434|443|/40000"
     [ngtcp2]="nghttp2.org|-3|4433|4434|4433|/40000"
@@ -80,7 +81,7 @@ export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1:suppressions=../misc/gcc
 
 function test_server {
     # run quant client and save a log for post-processing
-    local opts="-i $iface -t3 -v5 -l /dev/null"
+    local opts="-i $iface -t5 -v5 -b 1000 -l /dev/null"
     local log_base="/tmp/$script.$pid.$1.log"
 
     IFS='|' read -ra info <<< "${servers[$1]}"
@@ -168,7 +169,7 @@ function bench_server {
         echo "$h2" > "$ret_base.t_h2"
 
         local cache="/tmp/$script.$pid.$1.cache"
-        local opts="-i $iface -t3 -v3 -l /dev/null"
+        local opts="-i $iface -t5 -v3 -l /dev/null"
         local hq_out="$log_base.hq.out"
         local wd hq
         ext=""
@@ -278,7 +279,7 @@ function analyze {
     [ $? -eq 1 ] && echo E > "$ret_base.aecn"
     [ ! -e "$ret_base.fail" ] && [ -s "$ret_base.hshk" ] && \
         [ -s "$ret_base.data" ] && [ -s "$ret_base.clse" ] && rm -f "$log"
-    # rm -f "$log_strip"
+    rm -f "$log_strip"
 
     # analyze rsmt and 0rtt
     local log="$log_base.0rtt"
@@ -323,7 +324,7 @@ function analyze {
        $x && /RX.*Short kyph=1/ && exit 1;' "$log_strip"
     [ $? -eq 1 ] && echo U > "$ret_base.kyph"
     [ ! -e "$ret_base.fail" ] && [ -s "$ret_base.kyph" ] && rm -f "$log"
-    # rm -f "$log_strip"
+    rm -f "$log_strip"
 
     # analyze h3
     local log="$log_base.h3"
@@ -447,7 +448,9 @@ for s in "${sorted[@]}"; do
     printf "\\n" >> "$tmp"
 done
 
-expand -t 5 "$tmp" | sponge "$tmp"
+tmp2=$(mktemp)
+expand -t 5 "$tmp" > "$tmp2"
+mv "$tmp2" "$tmp"
 if ! diff -wq "$(dirname $0)/$script.result" "$tmp" > /dev/null; then
     cat "$tmp"
 fi

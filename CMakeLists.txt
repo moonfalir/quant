@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.9)
 
-project(quant VERSION 0.0.25 LANGUAGES C CXX)
+project(quant VERSION 0.0.27 LANGUAGES C CXX)
 
 # See if we have google benchmark
 include(CheckCXXSymbolExists)
@@ -44,7 +44,7 @@ find_package(OpenSSL 1.1.0 REQUIRED)
 string(REGEX REPLACE "/include$" "" OPENSSL_ROOT_DIR ${OPENSSL_INCLUDE_DIR})
 
 if("${CMAKE_SYSTEM}" MATCHES "Linux")
-  add_definitions(-D_GNU_SOURCE)
+  add_compile_definitions(_GNU_SOURCE)
 endif()
 
 # Build "Debug" type by default
@@ -68,6 +68,7 @@ foreach(FLAG -pipe -Wextra -Wpedantic -Weverything -Werror
         -Wno-disabled-macro-expansion # clang on travis needs this
         -Wno-missing-field-initializers # and this (clang-5)
         -Wno-extra-semi-stmt # the kh_foreach* macros need this
+        -Wno-macro-redefined # because we redefine _FORTIFY_SOURCE
         -Wno-covered-switch-default -Wno-missing-braces
         -fcomment-block-commands=dotfile
         )
@@ -114,7 +115,7 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
     cmake_reset_check_state()
   endif()
 
-  add_definitions("-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2")
+  add_compile_definitions(_FORTIFY_SOURCE=2)
 
   if(NOT DEFINED ENV{CONTINUOUS_INTEGRATION} AND NOT DOCKER)
     # See if we can use the address sanitizer
@@ -156,7 +157,7 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
       if(_finstrument_functions)
         string(CONCAT CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -finstrument-functions")
         string(CONCAT CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -finstrument-functions")
-        add_definitions("-DDSTACK")
+        add_compile_definitions(DSTACK)
       else()
         message(FATAL_ERROR "-finstrument-functions not supported by compiler")
       endif()
@@ -244,7 +245,7 @@ if(FUZZER)
   check_c_compiler_flag(-fsanitize=fuzzer HAVE_FUZZER)
   cmake_reset_check_state()
   if(HAVE_FUZZER)
-    add_definitions(-DFUZZING)
+    add_compile_definitions(FUZZING)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=fuzzer,address,undefined")
     set(CMAKE_CXX_FLAGS
         "${CMAKE_CXX_FLAGS} -fsanitize=fuzzer,address,undefined")
