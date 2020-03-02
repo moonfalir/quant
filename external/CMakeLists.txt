@@ -90,7 +90,7 @@ externalproject_add(picoquic
     -DPTLS_MINICRYPTO_LIBRARY=${CMAKE_BINARY_DIR}/lib/deps/picotls/libpicotls-minicrypto.a
     -DPTLS_OPENSSL_LIBRARY=${CMAKE_BINARY_DIR}/lib/deps/picotls/libpicotls-openssl.a
     -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-    -DCMAKE_C_FLAGS="-D_DEBUG"
+    -DCMAKE_C_FLAGS=-Wno-error
   INSTALL_COMMAND ""
   EXCLUDE_FROM_ALL 1
 )

@@ -1972,6 +1972,7 @@ struct q_conn * new_conn(struct w_engine * const w,
         c->tp_mine.disable_active_migration ? 0 : (is_clnt(c) ? 4 : 2);
 
 #if !defined(NO_MIGRATION) && !defined(NO_SERVER)
+    // TODO: avoid encoding RFC1918 addresses
     if (!is_clnt(c) && peer && w->have_ip4 && w->have_ip6) {
         // populate tp_mine.pref_addr
         const uint16_t other_af_idx =

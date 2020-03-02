@@ -46,9 +46,9 @@ declare -A servers=(
     [quant]="quant.eggert.org||4433|4434|4433|/40000"
     [quic-go]="quic.seemann.io|-3|443|443|443|/dynamic/40000"
     [quiche]="quic.tech|-3|8443|8444|8443|/128KB.png"
-    [quicker]="quicker.edm.uhasselt.be||4433|4434|4433|/index.html"
+    # [quicker]="quicker.edm.uhasselt.be||4433|4434|4433|/index.html"
     [quicly]="quic.examp1e.net||4433|4434|443|/40000"
-    [quinn]="ralith.com||4433|4434|4433|/100K"
+    # [quinn]="ralith.com||4433|4434|4433|/100K"
     [winquic]="quic.westus.cloudapp.azure.com||4433|4434|443|/draft-ietf-quic-http-11.txt"
     # [local]="localhost||4433|4434|4433|/40000"
 )
@@ -298,7 +298,7 @@ function analyze {
     [ $? -eq 1 ] && echo Z > "$ret_base.zrtt"
     [ ! -e "$ret_base.fail" ] && [ -s "$ret_base.rsmt" ] && \
         [ -s "$ret_base.zrtt" ] && rm -f "$log"
-    rm -f "$log_strip"
+    # rm -f "$log_strip"
 
     # analyze rtry
     local log="$log_base.rtry"

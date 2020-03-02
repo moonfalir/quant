@@ -1,6 +1,16 @@
 FROM alpine:latest
-RUN apk add --no-cache cmake ninja gcc g++ git musl-dev linux-headers \
-        bsd-compat-headers openssl openssl-dev http-parser-dev
+RUN apk add --no-cache \
+        bsd-compat-headers \
+        cmake \
+        g++ \
+        gcc \
+        git \
+        http-parser-dev \
+        linux-headers \
+        musl-dev \
+        ninja \
+        openssl \
+        openssl-dev
 RUN git config --global user.email "docker@example.com"
 ADD . /src
 WORKDIR /src/Debug

@@ -1,15 +1,24 @@
-FROM martenseemann/quic-network-simulator-endpoint
-RUN apt-get update -y
-RUN apt-get install -y cmake g++ libssl-dev git pkg-config libhttp-parser-dev
+FROM martenseemann/quic-network-simulator-endpoint as qns
+RUN apt-get update -y && apt-get install -y \
+        cmake \
+        g++ \
+        git \
+        libhttp-parser-dev \
+        libssl-dev \
+        pkg-config
+
+FROM qns
 ADD . /src
 WORKDIR /src/Debug
 RUN cmake -DDOCKER=True  ..
 RUN make install
 
 FROM martenseemann/quic-network-simulator-endpoint
-RUN apt-get install -y libhttp-parser2.8 binutils
-COPY --from=0 /usr/local /usr/local
-COPY --from=0 /src/Debug/test/dummy.* /tls/
+RUN apt-get update -y && apt-get install -y \
+        binutils \
+        libhttp-parser2.8
+COPY --from=1 /usr/local /usr/local
+COPY --from=1 /src/Debug/test/dummy.* /tls/
 ADD ./test/interop.sh /run_endpoint.sh
 RUN chmod +x run_endpoint.sh
 ENTRYPOINT [ "/run_endpoint.sh" ]
