@@ -133,7 +133,8 @@ extern bool __attribute__((nonnull
 extern void __attribute__((nonnull))
 calc_lens_of_stream_or_crypto_frame(struct pkt_meta * const m,
                                     const struct w_iov * const v,
-                                    const struct q_stream * const s);
+                                    const struct q_stream * const s,
+                                    const bool rtx);
 
 extern void __attribute__((nonnull))
 enc_stream_or_crypto_frame(uint8_t ** pos,
@@ -258,14 +259,14 @@ enc_new_token_frame(struct q_conn_info * const ci,
 #ifndef NO_MIGRATION
 extern void __attribute__((nonnull
 #ifdef NO_QINFO
-                           (2, 3, 4, 5)
+                           (2, 3, 4)
 #endif
                                ))
 enc_retire_cid_frame(struct q_conn_info * const ci,
                      uint8_t ** pos,
                      const uint8_t * const end,
                      struct pkt_meta * const m,
-                     struct cid * const dcid);
+                     const uint_t seq);
 #endif
 
 extern void __attribute__((nonnull

@@ -47,7 +47,6 @@ func_ptr api_func = 0;
 void * api_conn = 0;
 void * api_strm = 0;
 
-static uint64_t now;
 static bool break_loop;
 
 
@@ -61,14 +60,7 @@ void loop_break(void)
 
 void loop_init(void)
 {
-    now = w_now();
     break_loop = false;
-}
-
-
-uint64_t loop_now(void)
-{
-    return now;
 }
 
 
@@ -84,21 +76,17 @@ void __attribute__((nonnull(1))) loop_run(struct w_engine * const w,
     break_loop = false;
 
     while (likely(break_loop == false)) {
-        now = w_now();
-        timeouts_update(ped(w)->wheel, now);
+        timeouts_update(ped(w)->wheel, w_now());
 
         struct timeout * t;
-        TIMEOUTS_FOREACH (t, ped(w)->wheel, TIMEOUTS_EXPIRED) {
+        while ((t = timeouts_get(ped(w)->wheel)) != 0)
             (*t->callback.fn)(t->callback.arg);
-            timeout_del(t);
-        }
 
-        if (break_loop)
+        if (unlikely(break_loop))
             break;
 
         const uint64_t next = timeouts_timeout(ped(w)->wheel);
-        if (next == 0)
-            continue;
+        assure(next, "next is null");
 
         if (w_nic_rx(w, (int64_t)next) == false)
             continue;
@@ -107,8 +95,8 @@ void __attribute__((nonnull(1))) loop_run(struct w_engine * const w,
         if (w_rx_ready(w, &sl) == 0)
             continue;
 
-        now = w_now();
-        timeouts_update(ped(w)->wheel, now);
+        // this actually matters
+        timeouts_update(ped(w)->wheel, w_now());
 
         struct w_sock * ws;
         sl_foreach (ws, &sl, next)

@@ -32,6 +32,7 @@
 
 #include <quant/quant.h>
 
+#include "cid.h"
 #include "conn.h"
 #include "diet.h"
 #include "quic.h"
@@ -154,6 +155,9 @@ void free_stream(struct q_stream * const s)
     }
 #endif
 
+    if (s->in_ctrl)
+        sl_remove(&c->need_ctrl, s, q_stream, node_ctrl);
+
     q_free(&s->out);
     q_free(&s->in);
     free(s);
@@ -219,7 +223,18 @@ void reset_stream(struct q_stream * const s, const bool forget)
 
 void do_stream_fc(struct q_stream * const s, const uint16_t len)
 {
-    s->blocked = (s->out_data + len + s->c->rec.max_pkt_size > s->out_data_max);
+#ifndef NDEBUG
+    uint_t actual_lost_cnt = 0;
+    struct w_iov * v = 0;
+    sq_foreach_from (v, &s->out, next)
+        if (meta(v).lost)
+            actual_lost_cnt++;
+    ensure(actual_lost_cnt == s->lost_cnt,
+           "stream " FMT_SID ": actual %" PRIu " != cnt %" PRIu, s->id,
+           actual_lost_cnt, s->lost_cnt);
+#endif
+
+    s->blocked = (s->out_data + len + s->c->rec.max_ups > s->out_data_max);
 
     if (s->in_data * 4 > s->in_data_max) {
         s->tx_max_strm_data = true;
@@ -237,9 +252,9 @@ void do_stream_id_fc(struct q_conn * const c,
 {
     if (local) {
         // this is a local stream
-        if (bidi)
+        if (bidi && c->sid_blocked_bidi == false)
             c->sid_blocked_bidi = (cnt == c->tp_peer.max_strms_bidi);
-        else
+        else if (c->sid_blocked_uni == false)
             c->sid_blocked_uni =
                 (c->tp_peer.max_strms_uni && cnt == c->tp_peer.max_strms_uni);
         return;

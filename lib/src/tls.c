@@ -25,7 +25,6 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 
-#include <assert.h>
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -47,7 +46,6 @@
 #include <openssl/evp.h>
 #include <openssl/ossl_typ.h>
 #include <openssl/pem.h>
-#include <openssl/x509.h>
 #include <picotls/openssl.h>
 
 #define cipher_suite ptls_openssl_cipher_suites
@@ -62,11 +60,7 @@
 #ifndef MINIMAL_CIPHERS
 #define cipher_suite ptls_minicrypto_cipher_suites
 #define x25519 ptls_minicrypto_x25519
-#else
-static const ptls_cipher_suite_t * cipher_suite[] = {
-    &ptls_minicrypto_aes128gcmsha256, 0};
 #endif
-
 #define aes128gcmsha256 ptls_minicrypto_aes128gcmsha256
 #define secp256r1 ptls_minicrypto_secp256r1
 #endif
@@ -101,10 +95,13 @@ static int uecc_rng(uint8_t * dest, unsigned size)
     ptls_minicrypto_random_bytes(dest, size);
     return 1;
 }
+#else
+#include <errno.h>
 #endif
 
 
 #include "bitset.h"
+#include "cid.h"
 #include "conn.h"
 #include "frame.h"
 #include "marshall.h"
@@ -168,10 +165,10 @@ static const size_t alpn_cnt = sizeof(alpn) / sizeof(alpn[0]);
 
 #define QUIC_TP 0xffa5
 
-#define TP_OCID 0x00    ///< original_connection_id
+#define TP_DCID_O 0x00  ///< original_destination_connection_id
 #define TP_IDTO 0x01    ///< idle_timeout
 #define TP_SRT 0x02     ///< stateless_reset_token
-#define TP_MPS 0x03     ///< max_packet_size
+#define TP_MUPS 0x03    ///< max_udp_payload_size
 #define TP_IMD 0x04     ///< initial_max_data
 #define TP_IMSD_BL 0x05 ///< initial_max_stream_data_bidi_local
 #define TP_IMSD_BR 0x06 ///< initial_max_stream_data_bidi_remote
@@ -183,7 +180,9 @@ static const size_t alpn_cnt = sizeof(alpn) / sizeof(alpn[0]);
 #define TP_DMIG 0x0c    ///< disable_active_migration
 #define TP_PRFA 0x0d    ///< preferred_address
 #define TP_ACIL 0x0e    ///< active_connection_id_limit
-#define TP_MAX (TP_ACIL + 1)
+#define TP_SCID_I 0x0f  ///< initial_source_connection_id
+#define TP_SCID_R 0x10  ///< retry_source_connection_id
+#define TP_MAX (TP_SCID_R + 1)
 
 #define TP_QR 3127
 
@@ -295,10 +294,9 @@ Exit:
 }
 
 
-// from quicly (with mods to the setup_initial_key call)
+// from quicly (with mods)
 static int setup_initial_encryption(struct st_quicly_cipher_context_t * ingress,
                                     struct st_quicly_cipher_context_t * egress,
-                                    ptls_cipher_suite_t ** cipher_suites,
                                     ptls_iovec_t cid,
                                     int is_client)
 {
@@ -306,28 +304,20 @@ static int setup_initial_encryption(struct st_quicly_cipher_context_t * ingress,
                                    0x5a, 0x11, 0xa7, 0xd2, 0x43, 0x2b, 0xb4,
                                    0x63, 0x65, 0xbe, 0xf9, 0xf5, 0x02};
     static const char * labels[2] = {"client in", "server in"};
-    ptls_cipher_suite_t ** cs;
+    ptls_cipher_suite_t * const cs = &aes128gcmsha256;
     uint8_t secret[PTLS_MAX_DIGEST_SIZE];
     int ret;
 
-    /* find aes128gcm cipher */
-    for (cs = cipher_suites;; ++cs) {
-        assert(cs != NULL);
-        if ((*cs)->id == PTLS_CIPHER_SUITE_AES_128_GCM_SHA256)
-            break;
-    }
-
     /* extract master secret */
-    if ((ret = ptls_hkdf_extract((*cs)->hash, secret,
-                                 ptls_iovec_init(salt, sizeof(salt)), cid)) !=
-        0)
+    if ((ret = ptls_hkdf_extract(
+             cs->hash, secret, ptls_iovec_init(salt, sizeof(salt)), cid)) != 0)
         goto Exit;
 
     /* create aead contexts */
-    if ((ret = setup_initial_key(ingress, *cs, secret, labels[is_client], 0,
+    if ((ret = setup_initial_key(ingress, cs, secret, labels[is_client], 0,
                                  0)) != 0)
         goto Exit;
-    if ((ret = setup_initial_key(egress, *cs, secret, labels[!is_client], 1,
+    if ((ret = setup_initial_key(egress, cs, secret, labels[!is_client], 1,
                                  0)) != 0)
         goto Exit;
 
@@ -405,6 +395,30 @@ dec_tp(uint_t * const val, const uint8_t ** pos, const uint8_t * const end)
 }
 
 
+static bool __attribute__((nonnull))
+dec_cid(struct cid * const id, const uint8_t ** pos, const uint8_t * const end)
+{
+    uint64_t len = 0;
+    if (decv(&len, pos, end) == false)
+        return false;
+    id->len = (uint8_t)len;
+    if (id->len)
+        decb(id->id, pos, end, id->len);
+    return true;
+}
+
+
+#ifndef NDEBUG
+static bool __attribute__((const)) is_grease_tp(const uint64_t tp)
+{
+    if (tp < 27)
+        return false;
+    const uint64_t n = (tp - 27) / 31;
+    return n * 31 + 27 == tp;
+}
+#endif
+
+
 static int chk_tp(ptls_t * tls __attribute__((unused)),
                   ptls_handshake_properties_t * properties,
                   ptls_raw_extension_t * slots)
@@ -415,13 +429,11 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
                  offsetof(struct q_conn, tls));
 
     if (unlikely(slots[0].type != QUIC_TP)) {
-        err_close(c, ERR_TRANSPORT_PARAMETER, FRM_CRY, "slots[0].type = 0x%04x",
-                  slots[0].type);
+        err_close(c, ERR_TP, FRM_CRY, "slots[0].type = 0x%04x", slots[0].type);
         return 1;
     }
     if (unlikely(slots[1].type != UINT16_MAX)) {
-        err_close(c, ERR_TRANSPORT_PARAMETER, FRM_CRY, "slots[1].type = 0x%04x",
-                  slots[1].type);
+        err_close(c, ERR_TP, FRM_CRY, "slots[1].type = 0x%04x", slots[1].type);
         return 1;
     }
 
@@ -433,8 +445,11 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
     bitset_define(tp_list, TP_MAX);
     struct tp_list tp_list = bitset_t_initializer(0);
 
+    struct cid orig_dcid = {.len = UINT8_MAX};
+    struct cid ini_scid = {.len = UINT8_MAX};
+    struct cid rtry_scid = {.len = UINT8_MAX};
     c->tp_peer.act_cid_lim = UINT_T_MAX;
-    c->tp_peer.max_pkt = MAX_PKT_LEN;
+    c->tp_peer.max_ups = MAX_UPS;
     while (pos < end) {
         uint64_t tp;
         if (decv(&tp, &pos, end) == false)
@@ -447,7 +462,7 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
                 return 1;
             warn(WRN,
                  "\t" BLD "%s tp" NRM " (0x%" PRIx64 " w/len %" PRIu64 ") = %s",
-                 (tp & 0xff00) == 0xff00
+                 is_grease_tp(tp)
                      ? YEL "private"
                      : (tp == TP_QR ? RED "quantum-ready" : RED "unknown"),
                  tp, unknown_len,
@@ -458,8 +473,7 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
 
         // check if this transport parameter is a duplicate
         if (bit_isset(TP_MAX, tp, &tp_list)) {
-            err_close(c, ERR_TRANSPORT_PARAMETER, FRM_CRY,
-                      "duplicate tp 0x%04x", tp);
+            err_close(c, ERR_TP, FRM_CRY, "duplicate tp 0x%04lx", tp);
             return 1;
         }
         bit_set(TP_MAX, tp, &tp_list);
@@ -519,15 +533,15 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
                  c->tp_peer.max_idle_to);
             break;
 
-        case TP_MPS:
-            if (dec_tp(&c->tp_peer.max_pkt, &pos, end) == false)
+        case TP_MUPS:
+            if (dec_tp(&c->tp_peer.max_ups, &pos, end) == false)
                 return 1;
-            warn(INF, "\tmax_packet_size = %" PRIu " [bytes]",
-                 c->tp_peer.max_pkt);
-            if (c->tp_peer.max_pkt < 1200) {
-                err_close(c, ERR_TRANSPORT_PARAMETER, FRM_CRY,
-                          "tp_peer.max_pkt %" PRIu " invalid (< 1200)",
-                          c->tp_peer.max_pkt);
+            warn(INF, "\tmax_udp_payload_size = %" PRIu " [bytes]",
+                 c->tp_peer.max_ups);
+            if (c->tp_peer.max_ups < 1200) {
+                err_close(c, ERR_TP, FRM_CRY,
+                          "tp_peer.max_ups %" PRIu " invalid (< 1200)",
+                          c->tp_peer.max_ups);
                 return 1;
             }
             break;
@@ -537,7 +551,7 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
                 return 1;
             warn(INF, "\tack_delay_exponent = %" PRIu, c->tp_peer.ack_del_exp);
             if (c->tp_peer.ack_del_exp > 20) {
-                err_close(c, ERR_TRANSPORT_PARAMETER, FRM_CRY,
+                err_close(c, ERR_TP, FRM_CRY,
                           "ack_delay_exponent %" PRIu " invalid",
                           c->tp_peer.ack_del_exp);
                 return 1;
@@ -550,29 +564,22 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
             warn(INF, "\tmax_ack_delay = %" PRIu " [ms]",
                  c->tp_peer.max_ack_del);
             if (c->tp_peer.max_ack_del > (1 << 14)) {
-                err_close(c, ERR_TRANSPORT_PARAMETER, FRM_CRY,
-                          "max_ack_delay %" PRIu " invalid",
+                err_close(c, ERR_TP, FRM_CRY, "max_ack_delay %" PRIu " invalid",
                           c->tp_peer.max_ack_del);
                 return 1;
             }
             break;
 
-        case TP_OCID:
+        case TP_DCID_O:
             if (is_clnt(c) == false) {
-                err_close(c, ERR_TRANSPORT_PARAMETER, FRM_CRY,
-                          "rx original_connection_id tp at serv");
+                err_close(c, ERR_TP, FRM_CRY,
+                          "serv got original_destination_connection_id tp");
                 return 1;
             }
-
-            uint64_t len;
-            if (decv(&len, &pos, end) == false)
+            if (dec_cid(&orig_dcid, &pos, end) == false)
                 return 1;
-            if (len) {
-                decb(c->tp_peer.orig_cid.id, &pos, end, (uint16_t)len);
-                c->tp_peer.orig_cid.len = (uint8_t)len;
-            }
-            warn(INF, "\toriginal_connection_id = %s",
-                 cid_str(&c->tp_peer.orig_cid));
+            warn(INF, "\toriginal_destination_connection_id = %s",
+                 cid_str(&orig_dcid));
             break;
 
         case TP_DMIG:;
@@ -585,7 +592,7 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
 
         case TP_SRT:
             if (is_clnt(c) == false) {
-                err_close(c, ERR_TRANSPORT_PARAMETER, FRM_CRY,
+                err_close(c, ERR_TP, FRM_CRY,
                           "rx stateless_reset_token tp at serv");
                 return 1;
             }
@@ -593,21 +600,19 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
             if (decv(&l, &pos, end) == false)
                 return 1;
 #ifndef NO_SRT_MATCHING
-            struct cid * const dcid = c->dcid;
-            uint8_t * srt = dcid->srt;
+            uint8_t * srt = c->dcid->srt;
 #else
             uint8_t srt[SRT_LEN];
 #endif
             if (l != SRT_LEN) {
-                err_close(c, ERR_TRANSPORT_PARAMETER, FRM_CRY,
-                          "illegal srt len %u", l);
+                err_close(c, ERR_TP, FRM_CRY, "illegal srt len %" PRIu64, l);
                 return 1;
             }
             decb(srt, &pos, end, SRT_LEN);
             warn(INF, "\tstateless_reset_token = %s", srt_str(srt));
 #ifndef NO_SRT_MATCHING
-            dcid->has_srt = true;
-            conns_by_srt_ins(c, srt);
+            c->dcid->has_srt = true;
+            conns_by_srt_ins(c, c->dcid->srt);
 #endif
             break;
 
@@ -629,7 +634,11 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
             decb((uint8_t *)&pa6->addr.ip6, &pos, e, sizeof(pa6->addr.ip6));
             decb((uint8_t *)&pa6->port, &pos, e, sizeof(pa6->port));
 
-            dec1(&pa->cid.len, &pos, e);
+            if (unlikely(dec1(&pa->cid.len, &pos, e) == false)) {
+                err_close(c, ERR_TP, FRM_CRY, "cannot decode tp 0x%04" PRIx64,
+                          tp);
+                return 1;
+            }
             decb(pa->cid.id, &pos, e, pa->cid.len);
             pa->cid.seq = 1;
 
@@ -638,7 +647,13 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
             pa->cid.has_srt = true;
 #endif
             decb(srt, &pos, e, SRT_LEN);
-            add_dcid(c, &pa->cid);
+#ifndef NO_SRT_MATCHING
+            struct cid * const dcid =
+#endif
+                cid_ins(&c->dcids, &pa->cid);
+#ifndef NO_SRT_MATCHING
+            conns_by_srt_ins(c, dcid->srt);
+#endif
 
             warn(INF,
                  "\tpreferred_address = IPv4=%s:%u IPv6=[%s]:%u cid=%s srt=%s",
@@ -654,25 +669,79 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
                  c->tp_peer.act_cid_lim);
             break;
 
+        case TP_SCID_I:
+            if (dec_cid(&ini_scid, &pos, end) == false)
+                return false;
+            warn(INF, "\tinitial_source_connection_id = %s",
+                 cid_str(&ini_scid));
+            break;
+
+        case TP_SCID_R:
+            if (dec_cid(&rtry_scid, &pos, end) == false)
+                return false;
+            warn(INF, "\tretry_source_connection_id = %s", cid_str(&rtry_scid));
+            break;
+
         default:
-            err_close(c, ERR_TRANSPORT_PARAMETER, FRM_CRY,
-                      "unsupported tp 0x%04x", tp);
+            err_close(c, ERR_TP, FRM_CRY, "unsupported tp 0x%04" PRIx64, tp);
             return 1;
         }
     }
 
-    // if we did a RETRY, check that we got orig_cid and it matches
-    if (is_clnt(c) && c->tok_len) {
-        if (c->tp_peer.orig_cid.len == 0) {
-            err_close(c, ERR_TRANSPORT_PARAMETER, FRM_CRY,
-                      "no original_connection_id tp received");
-            return 1;
-        }
+    // authenticate CIDs
+    if (ini_scid.len == UINT8_MAX) {
+        err_close(c, ERR_TP, FRM_CRY, "no initial_source_connection_id tp");
+        return 1;
+    }
 
-        if (cid_cmp(&c->tp_peer.orig_cid, &c->odcid)) {
-            err_close(c, ERR_TRANSPORT_PARAMETER, FRM_CRY,
-                      "cid/odcid mismatch");
-            return 1;
+    if (is_clnt(c) && orig_dcid.len == UINT8_MAX) {
+        err_close(c, ERR_TP, FRM_CRY,
+                  "no original_destination_connection_id tp");
+        return 1;
+    }
+
+    if (cid_cmp(&ini_scid, c->dcid)) {
+        mk_cid_str(ERR, &ini_scid, ini_scid_str);
+        mk_cid_str(ERR, c->dcid, dcid_str);
+        warn(ERR, "initial_source_connection_id mismatch, %s != %s",
+             ini_scid_str, dcid_str);
+        err_close(c, ERR_TP, FRM_CRY, "initial_source_connection_id mismatch");
+        return 1;
+    }
+
+    // if we did a RETRY, check that we got orig_dcid and it matches
+    if (is_clnt(c)) {
+        if (c->tok_len) {
+            // we had a Retry
+            if (rtry_scid.len == UINT8_MAX) {
+                err_close(c, ERR_TP, FRM_CRY,
+                          "no retry_source_connection_id tp");
+                return 1;
+            }
+
+            if (orig_dcid.len == UINT8_MAX) {
+                err_close(c, ERR_TP, FRM_CRY,
+                          "no original_destination_connection_id tp");
+                return 1;
+            }
+
+            if (cid_cmp(&orig_dcid, &c->odcid)) {
+                mk_cid_str(ERR, &orig_dcid, orig_dcid_str);
+                mk_cid_str(ERR, &c->odcid, odcid_str);
+                warn(ERR,
+                     "original_destination_connection_id mismatch, %s != %s",
+                     orig_dcid_str, odcid_str);
+                err_close(c, ERR_TP, FRM_CRY,
+                          "original_destination_connection_id mismatch");
+                return 1;
+            }
+        } else {
+            // no Retry
+            if (rtry_scid.len != UINT8_MAX) {
+                err_close(c, ERR_TP, FRM_CRY,
+                          "got retry_source_connection_id tp");
+                return 1;
+            }
         }
     }
 
@@ -680,7 +749,7 @@ static int chk_tp(ptls_t * tls __attribute__((unused)),
         if (c->tp_peer.act_cid_lim == UINT_T_MAX)
             c->tp_peer.act_cid_lim = 2;
         else if (c->tp_peer.act_cid_lim < 2)
-            err_close(c, ERR_TRANSPORT_PARAMETER, FRM_CRY,
+            err_close(c, ERR_TP, FRM_CRY,
                       "active_connection_id_limit %" PRIu " < 2",
                       c->tp_peer.act_cid_lim);
     } else
@@ -707,7 +776,7 @@ static void __attribute__((nonnull)) enc_tp(uint8_t ** pos,
 
 static void __attribute__((nonnull(1, 2))) encb_tp(uint8_t ** pos,
                                                    const uint8_t * const end,
-                                                   const uint16_t tp,
+                                                   const uint64_t tp,
                                                    const uint8_t * const val,
                                                    const uint16_t len)
 {
@@ -730,27 +799,45 @@ void init_tp(struct q_conn * const c)
     const uint8_t * end = c->tls.tp_buf + TP_LEN;
 
     // add a grease tp
-    uint8_t grease[18];
+    uint8_t grease[17];
     rand_bytes(&grease, sizeof(grease));
-    const uint16_t grease_type = 0xff00 + grease[0];
-    const uint16_t grease_len = grease[1] & 0x0f;
+    const uint64_t grease_type = UINT64_C(31) * w_rand32() + 27;
+    const uint16_t grease_len = grease[0] & 0x0f;
 
     // add the quantum-readiness tp
+    unpoison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
     memset(ped(c->w)->scratch, 'Q', MIN_INI_LEN);
 
-    uint16_t tp_order[] = {TP_OCID,     TP_IDTO,    TP_SRT,    TP_MPS,  TP_IMD,
-                           TP_IMSD_BL,  TP_IMSD_BR, TP_IMSD_U, TP_IMSB, TP_IMSU,
-                           TP_ADE,      TP_MAD,     TP_DMIG,   TP_PRFA, TP_ACIL,
-                           grease_type, TP_QR};
+    uint64_t tp_order[] = {TP_DCID_O, TP_IDTO,     TP_SRT,     TP_MUPS,
+                           TP_IMD,    TP_IMSD_BL,  TP_IMSD_BR, TP_IMSD_U,
+                           TP_IMSB,   TP_IMSU,     TP_ADE,     TP_MAD,
+                           TP_DMIG,   TP_PRFA,     TP_ACIL,    TP_SCID_I,
+                           TP_SCID_R, grease_type, TP_QR};
     const size_t tp_cnt = sizeof(tp_order) / sizeof(tp_order[0]);
 
     // modern version of Fisher-Yates
     // https://en.wikipedia.org/wiki/Fisher%E2%80%93Yates_shuffle#The_modern_algorithm
     for (size_t j = tp_cnt - 1; j >= 1; j--) {
         const size_t r = w_rand_uniform32((uint32_t)j);
-        const uint16_t tmp = tp_order[r];
+        const uint64_t tmp = tp_order[r];
         tp_order[r] = tp_order[j];
         tp_order[j] = tmp;
+    }
+
+    // extract data from token, if it exists
+    struct cid odcid = {.len = UINT8_MAX};
+    struct cid rtry_scid = {.len = UINT8_MAX};
+    static const struct cid zero_len_cid = {.len = 0};
+    if (!is_clnt(c) && c->tok_len) {
+        size_t p = 0;
+        memcpy(&odcid.len, &c->tok[p], sizeof(odcid.len));
+        p += sizeof(odcid.len);
+        memcpy(odcid.id, &c->tok[p], odcid.len);
+        p += odcid.len;
+        memcpy(&rtry_scid.len, &c->tok[p], sizeof(rtry_scid.len));
+        p += sizeof(rtry_scid.len);
+        memcpy(rtry_scid.id, &c->tok[p], rtry_scid.len);
+        c->tok_len = 0;
     }
 
     for (size_t j = 0; j <= tp_cnt - 1; j++)
@@ -768,6 +855,7 @@ void init_tp(struct q_conn * const c)
 #endif
             }
             break;
+
         case TP_SRT:
 #ifndef NO_SRT_MATCHING
             if (!is_clnt(c)) {
@@ -779,15 +867,19 @@ void init_tp(struct q_conn * const c)
             }
 #endif
             break;
-        case TP_OCID:
-            if (!is_clnt(c) && c->odcid.len) {
-                encb_tp(&pos, end, TP_OCID, c->odcid.id, c->odcid.len);
+
+        case TP_DCID_O:
+            if (!is_clnt(c)) {
+                const struct cid * const id =
+                    odcid.len != UINT8_MAX ? &odcid : &c->odcid;
+                encb_tp(&pos, end, TP_DCID_O, id->id, id->len);
 #ifdef DEBUG_EXTRA
-                warn(INF, "\toriginal_connection_id = %s",
-                     cid_str(&c->tp_mine.orig_cid));
+                warn(INF, "\toriginal_destination_connection_id = %s",
+                     cid_str(id));
 #endif
             }
             break;
+
         case TP_IMSB:
             enc_tp(&pos, end, TP_IMSB, c->tp_mine.max_strms_bidi);
 #ifdef DEBUG_EXTRA
@@ -795,6 +887,7 @@ void init_tp(struct q_conn * const c)
                  c->tp_mine.max_strms_bidi);
 #endif
             break;
+
         case TP_IDTO:
             if (c->tp_mine.max_idle_to) {
                 enc_tp(&pos, end, TP_IDTO, c->tp_mine.max_idle_to);
@@ -804,6 +897,7 @@ void init_tp(struct q_conn * const c)
 #endif
             }
             break;
+
         case TP_IMSD_BR:
             enc_tp(&pos, end, TP_IMSD_BR, c->tp_mine.max_strm_data_bidi_remote);
 #ifdef DEBUG_EXTRA
@@ -812,6 +906,7 @@ void init_tp(struct q_conn * const c)
                  c->tp_mine.max_strm_data_bidi_remote);
 #endif
             break;
+
         case TP_IMSD_BL:
             enc_tp(&pos, end, TP_IMSD_BL, c->tp_mine.max_strm_data_bidi_local);
 #ifdef DEBUG_EXTRA
@@ -820,6 +915,7 @@ void init_tp(struct q_conn * const c)
                  c->tp_mine.max_strm_data_bidi_remote);
 #endif
             break;
+
         case TP_IMD:
             enc_tp(&pos, end, TP_IMD, c->tp_mine.max_data);
 #ifdef DEBUG_EXTRA
@@ -827,6 +923,7 @@ void init_tp(struct q_conn * const c)
                  c->tp_mine.max_data);
 #endif
             break;
+
         case TP_ADE:
             if (c->tp_mine.ack_del_exp != DEF_ACK_DEL_EXP) {
                 enc_tp(&pos, end, TP_ADE, c->tp_mine.ack_del_exp);
@@ -836,6 +933,7 @@ void init_tp(struct q_conn * const c)
 #endif
             }
             break;
+
         case TP_MAD:
             if (c->tp_mine.max_ack_del != DEF_MAX_ACK_DEL) {
                 enc_tp(&pos, end, TP_MAD, c->tp_mine.max_ack_del);
@@ -845,13 +943,15 @@ void init_tp(struct q_conn * const c)
 #endif
             }
             break;
-        case TP_MPS:
-            enc_tp(&pos, end, TP_MPS, c->tp_mine.max_pkt);
+
+        case TP_MUPS:
+            enc_tp(&pos, end, TP_MUPS, c->tp_mine.max_ups);
 #ifdef DEBUG_EXTRA
-            warn(INF, "\tmax_packet_size = %" PRIu " [bytes]",
-                 c->tp_mine.max_pkt);
+            warn(INF, "\tmax_udp_payload_size = %" PRIu " [bytes]",
+                 c->tp_mine.max_ups);
 #endif
             break;
+
         case TP_ACIL:
             if (c->tp_mine.disable_active_migration == false) {
                 enc_tp(&pos, end, TP_ACIL, c->tp_mine.act_cid_lim);
@@ -861,7 +961,9 @@ void init_tp(struct q_conn * const c)
 #endif
             }
             break;
+
         case TP_PRFA:;
+#ifndef NO_SERVER
             struct pref_addr * const pa = &c->tp_mine.pref_addr;
             if (!is_clnt(c) && pa->cid.seq) {
                 struct w_sockaddr * const pa4 = &pa->addr4;
@@ -891,7 +993,9 @@ void init_tp(struct q_conn * const c)
                      cid_str(&pa->cid), srt_str(srt));
 #endif
             }
+#endif
             break;
+
         case TP_DMIG:
             if (c->tp_mine.disable_active_migration) {
                 enc_tp(&pos, end, TP_DMIG, c->tp_mine.disable_active_migration);
@@ -900,15 +1004,34 @@ void init_tp(struct q_conn * const c)
 #endif
             }
             break;
+
+        case TP_SCID_I:;
+            const struct cid * const scid = c->scid ? c->scid : &zero_len_cid;
+            encb_tp(&pos, end, TP_SCID_I, scid->id, scid->len);
+#ifdef DEBUG_EXTRA
+            warn(INF, "\tinitial_source_connection_id = %s", cid_str(scid));
+#endif
+
+            break;
+
+        case TP_SCID_R:
+            if (!is_clnt(c) && rtry_scid.len != UINT8_MAX) {
+                encb_tp(&pos, end, TP_SCID_R, rtry_scid.id, rtry_scid.len);
+#ifdef DEBUG_EXTRA
+                warn(INF, "\tretry_source_connection_id = %s",
+                     cid_str(&rtry_scid));
+#endif
+            }
+            break;
+
         default:
             if (tp_order[j] == grease_type) {
-                encb_tp(&pos, end, grease_type, &grease[2], grease_len);
+                encb_tp(&pos, end, grease_type, &grease[1], grease_len);
 #ifdef DEBUG_EXTRA
-                warn(WRN, "\t" BLD "%s tp" NRM " (0x%04x w/len %u) = %s",
-                     (grease_type & 0xff00) == 0xff00 ? YEL "private"
-                                                      : RED "unknown",
+                warn(WRN, "\t" BLD "%s tp" NRM " (0x%" PRIx64 " w/len %u) = %s",
+                     is_grease_tp(grease_type) ? YEL "private" : RED "unknown",
                      grease_type, grease_len,
-                     hex2str(&grease[2], grease_len,
+                     hex2str(&grease[1], grease_len,
                              (char[hex_str_len(TP_LEN)]){""},
                              hex_str_len(TP_LEN)));
 #endif
@@ -923,9 +1046,10 @@ void init_tp(struct q_conn * const c)
 #endif
                 }
             } else
-                die("unknown tp 0x%04x", tp_order[j]);
+                die("unknown tp 0x%" PRIx64, tp_order[j]);
             break;
         }
+    poison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
 
     c->tls.tp_ext[0] = (ptls_raw_extension_t){
         .type = QUIC_TP,
@@ -967,11 +1091,11 @@ static int encrypt_ticket_cb(ptls_encrypt_ticket_t * self
              conn_type(c), cid_str(c->scid), ptls_get_server_name(tls),
              ptls_get_negotiated_protocol(tls));
 
-        // prepend git commit hash
+        // append git commit hash
         memcpy(dst->base + dst->off, quant_commit_hash, quant_commit_hash_len);
         dst->off += quant_commit_hash_len;
 
-        // prepend ticket id
+        // append ticket id
         rand_bytes(&tid, sizeof(tid));
         memcpy(dst->base + dst->off, &tid, sizeof(tid));
         dst->off += sizeof(tid);
@@ -1188,6 +1312,7 @@ void init_tls(struct q_conn * const c,
         if (t && t->vers != 0) {
             hshk_prop->client.session_ticket =
                 ptls_iovec_init(t->ticket, t->ticket_len);
+            // TODO: make sure to not use the tp values we're not supposed to
             memcpy(&c->tp_peer, &t->tp, sizeof(t->tp));
             c->vers_initial = c->vers = t->vers;
             c->try_0rtt = true;
@@ -1232,15 +1357,13 @@ void free_tls(struct q_conn * const c, const bool keep_alpn)
 
 void init_prot(struct q_conn * const c)
 {
-    struct cid * const scid = c->scid; // NOLINT
+    struct cid * const scid = c->scid;
     struct cid * const dcid = c->dcid;
     const ptls_iovec_t cid = {
         .base = (uint8_t *)(is_clnt(c) ? &dcid->id : &scid->id),
         .len = is_clnt(c) ? dcid->len : scid->len};
-    ptls_cipher_suite_t * cs = &aes128gcmsha256;
     struct pn_space * const pn = &c->pns[pn_init];
-    setup_initial_encryption(&pn->early.in, &pn->early.out, &cs, cid,
-                             is_clnt(c));
+    setup_initial_encryption(&pn->early.in, &pn->early.out, cid, is_clnt(c));
 }
 
 
@@ -1251,7 +1374,9 @@ int tls_io(struct q_stream * const s, struct w_iov * const iv)
     const epoch_t ep_in = strm_epoch(s);
     size_t epoch_off[5] = {0};
     ptls_buffer_t tls_io;
-    ptls_buffer_init(&tls_io, ped(s->c->w)->scratch, ped(s->c->w)->scratch_len);
+
+    unpoison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
+    ptls_buffer_init(&tls_io, ped(c->w)->scratch, ped(c->w)->scratch_len);
 
     const int ret =
 #ifndef NO_SERVER
@@ -1283,8 +1408,16 @@ int tls_io(struct q_stream * const s, struct w_iov * const iv)
                     c->try_0rtt &&
                     (c->tls.tls_hshk_prop.client.early_data_acceptance ==
                      PTLS_EARLY_DATA_ACCEPTED);
-        } else
+        } else {
             c->tx_hshk_done = ptls_handshake_is_complete(c->tls.t) != 0;
+            if (c->tx_hshk_done) {
+                c->needs_tx = true;
+#ifndef NO_MIGRATION
+                // also stop caring about odcid now
+                conns_by_id_del(&c->odcid);
+#endif
+            }
+        }
 
     } else if (ret != PTLS_ERROR_IN_PROGRESS &&
                ret != PTLS_ERROR_STATELESS_RETRY) {
@@ -1320,6 +1453,7 @@ int tls_io(struct q_stream * const s, struct w_iov * const iv)
 
 done:
     ptls_buffer_dispose(&tls_io);
+    poison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
     return ret;
 }
 
@@ -1345,7 +1479,8 @@ static void read_tickets(const struct q_conf * const conf)
 #if !defined(PARTICLE) && !defined(RIOT_VERSION)
     FILE * const fp = fopen(conf->ticket_store, "rbe");
     if (fp == 0) {
-        warn(WRN, "could not read TLS tickets from %s", conf->ticket_store);
+        warn(WRN, "could not read TLS tickets from %s: %s", conf->ticket_store,
+             strerror(errno));
         return;
     }
 
@@ -1353,11 +1488,13 @@ static void read_tickets(const struct q_conf * const conf)
     size_t hash_len;
     if (fread(&hash_len, sizeof(quant_commit_hash_len), 1, fp) != 1)
         goto done;
+    if (hash_len != quant_commit_hash_len)
+        goto remove;
     uint8_t buf[8192];
     if (fread(buf, sizeof(uint8_t), hash_len, fp) != hash_len)
-        goto done;
-    if (hash_len != quant_commit_hash_len ||
-        memcmp(buf, quant_commit_hash, hash_len) != 0) {
+        goto remove;
+    if (memcmp(buf, quant_commit_hash, hash_len) != 0) {
+    remove:
         warn(WRN, "TLS tickets were stored by different %s version, removing",
              quant_name);
         ensure(unlink(conf->ticket_store) == 0, "unlink");
@@ -1378,6 +1515,7 @@ static void read_tickets(const struct q_conf * const conf)
         ensure(t->sni, "calloc");
         if (fread(t->sni, sizeof(*t->sni), len, fp) != len)
             goto abort;
+        t->sni[len - 1] = 0;
 
         if (fread(&len, sizeof(len), 1, fp) != 1)
             goto abort;
@@ -1386,6 +1524,7 @@ static void read_tickets(const struct q_conf * const conf)
         ensure(t->alpn, "calloc");
         if (fread(t->alpn, sizeof(*t->alpn), len, fp) != len)
             goto abort;
+        t->alpn[len - 1] = 0;
 
         if (fread(&t->tp, sizeof(t->tp), 1, fp) != 1)
             goto abort;
@@ -1477,6 +1616,7 @@ static int update_traffic_key_cb(ptls_update_traffic_key_t * const self
         die("epoch %lu unknown", (unsigned long)epoch);
     }
 
+#ifndef NO_TLS_LOG
     if (ped(c->w)->tls_ctx.log_event) {
         static const char * const log_labels[2][4] = {
             {0, "CLIENT_EARLY_TRAFFIC_SECRET",
@@ -1491,9 +1631,16 @@ static int update_traffic_key_cb(ptls_update_traffic_key_t * const self
                     (char[hex_str_len(PTLS_MAX_DIGEST_SIZE)]){""},
                     hex_str_len(PTLS_MAX_DIGEST_SIZE)));
     }
+#endif
 
     return setup_cipher(&ctx->header_protection, &ctx->aead, cipher->aead,
                         cipher->hash, is_enc, secret);
+}
+
+
+static uint64_t get_time(ptls_get_time_t * self __attribute__((unused)))
+{
+    return NS_TO_MS(w_now());
 }
 
 
@@ -1543,7 +1690,7 @@ void init_tls_ctx(const struct q_conf * const conf,
     }
 #ifndef NO_SERVER
     tls_ctx->encrypt_ticket = &encrypt_ticket;
-    tls_ctx->max_early_data_size = 0xffffffff;
+    tls_ctx->max_early_data_size = UINT32_MAX;
     tls_ctx->ticket_lifetime = 60 * 60 * 24;
     tls_ctx->require_dhe_on_psk = 0;
 #endif
@@ -1560,18 +1707,40 @@ void init_tls_ctx(const struct q_conf * const conf,
     }
 #endif
 
-    static ptls_key_exchange_algorithm_t * key_exchanges[] = {&secp256r1,
+    static const ptls_key_exchange_algorithm_t * key_exchanges[] = {&secp256r1,
 #ifndef MINIMAL_CIPHERS
-                                                              &x25519,
+                                                                    &x25519,
 #endif
-                                                              0};
+                                                                    0};
+
+#ifdef MINIMAL_CIPHERS
+    static const ptls_cipher_suite_t * cipher_suite[] = {
+#ifdef WITH_OPENSSL
+        &ptls_openssl_aes128gcmsha256,
+#else
+        &ptls_minicrypto_aes128gcmsha256,
+#endif
+        0};
+#endif
+
+    static const ptls_cipher_suite_t * chacha20_cipher_suite[] = {
+#ifdef WITH_OPENSSL
+        &ptls_openssl_chacha20poly1305sha256,
+#else
+        &ptls_minicrypto_chacha20poly1305sha256,
+#endif
+        0};
+
     static ptls_on_client_hello_t on_client_hello = {on_ch};
     static ptls_update_traffic_key_t update_traffic_key = {
         update_traffic_key_cb};
 
+    static ptls_get_time_t get_time_cb = {get_time};
+    tls_ctx->get_time = &get_time_cb;
+
     tls_ctx->omit_end_of_early_data = true;
-    tls_ctx->get_time = &ptls_get_time; // needs to be absolute time
-    tls_ctx->cipher_suites = cipher_suite;
+    tls_ctx->cipher_suites =
+        conf && conf->force_chacha20 ? chacha20_cipher_suite : cipher_suite;
     tls_ctx->key_exchanges = key_exchanges;
     tls_ctx->on_client_hello = &on_client_hello;
     tls_ctx->update_traffic_key = &update_traffic_key;
@@ -1622,8 +1791,7 @@ void free_tls_ctx(struct per_engine_data * const ped)
 
 #ifdef WITH_OPENSSL
     ptls_openssl_dispose_sign_certificate(&ped->sign_cert);
-    X509_STORE_free(ped->verify_cert.cert_store);
-    // FIXME: ptls_openssl_dispose_verify_certificate(&ped->verify_cert) frees!
+    ptls_openssl_dispose_verify_certificate(&ped->verify_cert);
 #endif
 }
 
@@ -1723,25 +1891,39 @@ prep_hash_ctx(const struct q_conn * const c,
 }
 
 
-void make_rtry_tok(struct q_conn * const c)
+void mk_rtry_tok(struct q_conn * const c, const struct cid * const odcid)
 {
     const ptls_cipher_suite_t * const cs = &aes128gcmsha256;
     ptls_hash_context_t * const hc = prep_hash_ctx(c, cs);
 
-    // hash current scid
-    struct cid * const scid = c->scid;
-    hc->update(hc, scid->id, scid->len);
+    // hash current CIDs
+    hc->update(hc, &odcid->len, sizeof(odcid->len));
+    hc->update(hc, odcid->id, odcid->len);
+    hc->update(hc, &c->scid->len, sizeof(c->scid->len));
+    hc->update(hc, c->scid->id, c->scid->len);
     hc->final(hc, c->tok, PTLS_HASH_FINAL_MODE_FREE);
+    c->tok_len = (uint16_t)cs->hash->digest_size;
 
-    // append scid to hashed token
-    memcpy(&c->tok[cs->hash->digest_size], scid->id, scid->len);
-    // update max_frame_len() when this changes:
-    c->tok_len = (uint16_t)cs->hash->digest_size + scid->len;
-    // #ifdef DEBUG_PROT
+    // append CIDs to hashed token
+    memcpy(&c->tok[c->tok_len], &odcid->len, sizeof(odcid->len));
+    c->tok_len += sizeof(odcid->len);
+
+    memcpy(&c->tok[c->tok_len], odcid->id, odcid->len);
+    c->tok_len += odcid->len;
+
+    memcpy(&c->tok[c->tok_len], &c->scid->len, sizeof(c->scid->len));
+    c->tok_len += sizeof(c->scid->len);
+
+    memcpy(&c->tok[c->tok_len], c->scid->id, c->scid->len);
+    c->tok_len += c->scid->len;
+
+    // NOTE: update max_frame_len() when c->tok_len changes
+
+#ifdef DEBUG_PROT
     warn(DBG, "computed Retry tok %s",
          hex2str(c->tok, c->tok_len, (char[hex_str_len(MAX_TOK_LEN)]){""},
                  hex_str_len(c->tok_len)));
-    // #endif
+#endif
 }
 
 
@@ -1753,46 +1935,44 @@ bool verify_rtry_tok(struct q_conn * const c,
     ptls_hash_context_t * const hc = prep_hash_ctx(c, cs);
 
     // hash current cid included in token
+    unpoison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
     hc->update(hc, tok + cs->hash->digest_size,
                tok_len - cs->hash->digest_size);
-    uint8_t buf[PTLS_MAX_DIGEST_SIZE + CID_LEN_MAX];
-    hc->final(hc, buf, PTLS_HASH_FINAL_MODE_FREE);
+    hc->final(hc, ped(c->w)->scratch, PTLS_HASH_FINAL_MODE_FREE);
 
-    // #ifdef DEBUG_PROT
+#ifdef DEBUG_PROT
     warn(DBG, "computed Retry tok %s",
-         hex2str(buf, cs->hash->digest_size,
+         hex2str(ped(c->w)->scratch, cs->hash->digest_size,
                  (char[hex_str_len(MAX_TOK_LEN)]){""},
                  hex_str_len(cs->hash->digest_size)));
-    // #endif
-    if (memcmp(buf, tok, cs->hash->digest_size) == 0) {
-        c->odcid.len = (uint8_t)(tok_len - cs->hash->digest_size);
-        memcpy(&c->odcid.id, tok + cs->hash->digest_size, c->odcid.len);
-        return true;
+#endif
+    const bool ok = memcmp(ped(c->w)->scratch, tok, cs->hash->digest_size) == 0;
+    if (ok) {
+        c->tok_len = tok_len;
+        memcpy(c->tok, tok + cs->hash->digest_size,
+               tok_len - cs->hash->digest_size);
     }
-    // #ifdef DEBUG_PROT
-    warn(DBG, "rx'ed Retry tok %s",
-         hex2str(tok, cs->hash->digest_size,
-                 (char[hex_str_len(MAX_TOK_LEN)]){""},
-                 hex_str_len(cs->hash->digest_size)));
-    // #endif
-    return false;
+    poison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
+    return ok;
 }
 
 
-void make_rit(const struct q_conn * const c,
-              const uint8_t flags,
-              const struct cid * const dcid,
-              const struct cid * const scid,
-              const uint8_t * const tok,
-              const uint16_t tok_len,
-              uint8_t * const rit)
+void mk_rit(const struct q_conn * const c,
+            const struct cid * const odcid,
+            const uint8_t flags,
+            const struct cid * const dcid,
+            const struct cid * const scid,
+            const uint8_t * const tok,
+            const uint16_t tok_len,
+            uint8_t * const rit)
 {
+    unpoison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
     uint8_t * pos = ped(c->w)->scratch;
     uint8_t * end = pos + ped(c->w)->scratch_len;
 
     // encode the pseudo packet
-    enc1(&pos, end, c->odcid.len);
-    encb(&pos, end, c->odcid.id, c->odcid.len);
+    enc1(&pos, end, odcid->len);
+    encb(&pos, end, odcid->id, odcid->len);
     enc1(&pos, end, flags);
     enc4(&pos, end, c->vers);
     enc1(&pos, end, dcid->len);
@@ -1803,10 +1983,13 @@ void make_rit(const struct q_conn * const c,
 
     ptls_aead_encrypt(ped(c->w)->rid_ctx, rit, 0, 0, 0, ped(c->w)->scratch,
                       (size_t)(pos - ped(c->w)->scratch));
+    poison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
 }
 
 
-void flip_keys(struct q_conn * const c, const bool out)
+void flip_keys(struct q_conn * const c,
+               const bool out,
+               const ptls_cipher_suite_t * const cs)
 {
     struct pn_data * const pnd = &c->pns[pn_data].data;
     const bool new_kyph = !(out ? pnd->out_kyph : pnd->in_kyph);
@@ -1814,30 +1997,27 @@ void flip_keys(struct q_conn * const c, const bool out)
     warn(DBG, "flip %s kyph %u -> %u", out ? "out" : "in",
          out ? pnd->out_kyph : pnd->in_kyph, new_kyph);
 #endif
-    const ptls_cipher_suite_t * const cs = ptls_get_cipher(c->tls.t);
-    if (unlikely(cs == 0)) {
-        warn(ERR, "cannot obtain cipher suite");
-        return;
-    }
 
-    uint8_t new_secret[PTLS_MAX_DIGEST_SIZE];
     static const char flip_label[] = "quic ku";
     if (pnd->in_1rtt[new_kyph].aead)
         ptls_aead_free(pnd->in_1rtt[new_kyph].aead);
+    unpoison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
     if (setup_initial_key(&pnd->in_1rtt[new_kyph], cs, c->tls.secret[0],
-                          flip_label, 0, new_secret))
-        return;
-    memcpy(c->tls.secret[0], new_secret, cs->hash->digest_size);
+                          flip_label, 0, ped(c->w)->scratch))
+        goto done;
+    memcpy(c->tls.secret[0], ped(c->w)->scratch, cs->hash->digest_size);
     if (pnd->out_1rtt[new_kyph].aead)
         ptls_aead_free(pnd->out_1rtt[new_kyph].aead);
     if (setup_initial_key(&pnd->out_1rtt[new_kyph], cs, c->tls.secret[1],
-                          flip_label, 1, new_secret) != 0)
-        return;
-    memcpy(c->tls.secret[1], new_secret, cs->hash->digest_size);
+                          flip_label, 1, ped(c->w)->scratch) != 0)
+        goto done;
+    memcpy(c->tls.secret[1], ped(c->w)->scratch, cs->hash->digest_size);
 
     if (out == false)
         pnd->in_kyph = new_kyph;
     pnd->out_kyph = new_kyph;
+done:
+    poison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
 }
 
 
@@ -1850,6 +2030,10 @@ void maybe_flip_keys(struct q_conn * const c, const bool out)
     if (pnd->out_kyph != pnd->in_kyph)
         return;
 
-    flip_keys(c, out);
-    c->do_key_flip = false;
+    const ptls_cipher_suite_t * const cs = ptls_get_cipher(c->tls.t);
+    if (likely(cs)) {
+        flip_keys(c, out, cs);
+        c->do_key_flip = false;
+    } else
+        warn(ERR, "cannot obtain cipher suite");
 }

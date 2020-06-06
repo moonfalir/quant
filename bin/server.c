@@ -36,6 +36,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/param.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -47,7 +48,8 @@
 
 #include <quant/quant.h>
 
-struct q_conn;
+struct q_conn;   // IWYU pragma: no_forward_declare q_conn
+struct q_stream; // IWYU pragma: no_forward_declare q_stream
 
 
 #ifndef NDEBUG
@@ -60,11 +62,12 @@ static bool __attribute__((const)) is_bench_obj(const uint_t len)
 
 static void __attribute__((noreturn)) usage(const char * const name,
                                             const char * const ifname,
-                                            const char * const qlog,
+                                            const char * const qlog_dir,
                                             const uint16_t port,
                                             const char * const dir,
                                             const char * const cert,
                                             const char * const key,
+                                            const char * const tls_log,
                                             const uint32_t timeout,
                                             const bool retry,
                                             const uint32_t num_bufs)
@@ -76,9 +79,11 @@ static void __attribute__((noreturn)) usage(const char * const name,
     printf("\t[-d dir]\tserver root directory; default %s\n", dir);
     printf("\t[-i interface]\tinterface to run over; default %s\n", ifname);
     printf("\t[-k key]\tTLS key; default %s\n", key);
+    printf("\t[-l log]\tlog file for TLS keys; default %s\n",
+           *tls_log ? tls_log : "false");
     printf("\t[-p port]\tdestination port; default %d\n", port);
-    printf("\t[-q log]\twrite qlog events to file; default %s\n",
-           *qlog ? qlog : "false");
+    printf("\t[-q log]\twrite qlog events to directory; default %s\n",
+           *qlog_dir ? qlog_dir : "false");
     printf("\t[-r]\t\tforce a Retry; default %s\n", retry ? "true" : "false");
     printf("\t[-t timeout]\tidle timeout in seconds; default %u\n", timeout);
 #ifndef NDEBUG
@@ -98,7 +103,10 @@ struct cb_data {
 };
 
 
-static bool send_err(const struct cb_data * const d, const uint16_t code)
+KHASH_MAP_INIT_INT(strm_cache, struct w_iov_sq *)
+
+
+static bool send_err(struct cb_data * const d, const uint16_t code)
 {
     const char * msg;
     bool close = false;
@@ -122,9 +130,10 @@ static bool send_err(const struct cb_data * const d, const uint16_t code)
         msg = "500 Internal Server Error";
     }
 
-    if (close)
+    if (close && d->c) {
         q_close(d->c, 0x0003, msg);
-    else
+        d->c = 0;
+    } else
         q_write_str(d->w, d->s, msg, strlen(msg), true);
     return close;
 }
@@ -138,10 +147,10 @@ static uint32_t bench_cnt = 0;
 static int serve_cb(http_parser * parser, const char * at, size_t len)
 {
     (void)parser;
-    const struct cb_data * const d = parser->data;
+    struct cb_data * const d = parser->data;
     char cid_str[64];
-    q_cid(d->c, cid_str, sizeof(cid_str));
-    warn(INF, "conn %s str %" PRId " serving URL %.*s", cid_str, q_sid(d->s),
+    q_cid_str(d->c, cid_str, sizeof(cid_str));
+    warn(INF, "conn %s strm %" PRId " serving URL %.*s", cid_str, q_sid(d->s),
          (int)len, at);
 
     struct http_parser_url u = {0};
@@ -151,7 +160,7 @@ static int serve_cb(http_parser * parser, const char * at, size_t len)
         return send_err(d, 400);
     }
 
-    char path[MAXPATHLEN] = ".";
+    char path[8192] = ".";
     if ((u.field_set & (1 << UF_PATH)) == 0)
         return send_err(d, 400);
 
@@ -231,6 +240,18 @@ static int serve_cb(http_parser * parser, const char * at, size_t len)
 }
 
 
+static uint32_t __attribute__((nonnull))
+strm_key(struct q_conn * const c, const struct q_stream * const s)
+{
+    uint8_t buf[sizeof(uint_t) + 32];
+    const uint_t sid = q_sid(s);
+    memcpy(buf, &sid, sizeof(uint_t));
+    size_t len = sizeof(buf) - sizeof(uint_t);
+    q_cid(c, &buf[sizeof(uint_t)], &len);
+    return fnv1a_32(buf, len + sizeof(uint_t));
+}
+
+
 #define MAXPORTS 16
 
 int main(int argc, char * argv[])
@@ -248,7 +269,8 @@ int main(int argc, char * argv[])
     char dir[MAXPATHLEN] = ".";
     char cert[MAXPATHLEN] = "test/dummy.crt";
     char key[MAXPATHLEN] = "test/dummy.key";
-    char qlog[MAXPATHLEN] = "";
+    char tls_log[MAXPATHLEN] = "";
+    char qlog_dir[MAXPATHLEN] = "";
     uint16_t port[MAXPORTS] = {4433, 4434};
     size_t num_ports = 0;
     uint32_t num_bufs = 100000;
@@ -256,10 +278,17 @@ int main(int argc, char * argv[])
     int ret = 0;
     bool retry = false;
 
-    while ((ch = getopt(argc, argv, "hi:p:d:v:c:k:t:b:q:r")) != -1) {
+    // set default TLS log file from environment
+    const char * const keylog = getenv("SSLKEYLOGFILE");
+    if (keylog) {
+        strncpy(tls_log, keylog, MAXPATHLEN);
+        tls_log[MAXPATHLEN - 1] = 0;
+    }
+
+    while ((ch = getopt(argc, argv, "hi:p:d:v:c:k:t:b:q:rl:")) != -1) {
         switch (ch) {
         case 'q':
-            strncpy(qlog, optarg, sizeof(qlog) - 1);
+            strncpy(qlog_dir, optarg, sizeof(qlog_dir) - 1);
             break;
         case 'i':
             strncpy(ifname, optarg, sizeof(ifname) - 1);
@@ -289,6 +318,9 @@ int main(int argc, char * argv[])
         case 'r':
             retry = true;
             break;
+        case 'l':
+            strncpy(tls_log, optarg, sizeof(tls_log) - 1);
+            break;
         case 'v':
 #ifndef NDEBUG
             ini_dlevel = util_dlevel =
@@ -298,8 +330,8 @@ int main(int argc, char * argv[])
         case 'h':
         case '?':
         default:
-            usage(basename(argv[0]), ifname, qlog, port[0], dir, cert, key,
-                  timeout, retry, num_bufs);
+            usage(basename(argv[0]), ifname, qlog_dir, port[0], dir, cert, key,
+                  tls_log, timeout, retry, num_bufs);
         }
     }
 
@@ -311,28 +343,33 @@ int main(int argc, char * argv[])
     ensure(dir_fd != -1, "%s does not exist", dir);
 
     struct w_engine * const w =
-        q_init(ifname, &(const struct q_conf){.conn_conf =
-                                                  &(struct q_conn_conf){
-                                                      .idle_timeout = timeout,
-                                                      .enable_spinbit = true,
-                                                  },
-                                              .qlog = *qlog ? qlog : 0,
-                                              .force_retry = retry,
-                                              .num_bufs = num_bufs,
-                                              .tls_cert = cert,
-                                              .tls_key = key});
+        q_init(ifname,
+               &(const struct q_conf){
+                   .conn_conf =
+                       &(struct q_conn_conf){.idle_timeout = timeout,
+                                             .enable_spinbit = true,
+                                             .enable_udp_zero_checksums = true},
+                   .qlog_dir = *qlog_dir ? qlog_dir : 0,
+                   .tls_log = *tls_log ? tls_log : 0,
+                   .force_retry = retry,
+                   .num_bufs = num_bufs,
+                   .tls_cert = cert,
+                   .tls_key = key});
     for (size_t i = 0; i < num_ports; i++) {
         for (uint16_t idx = 0; idx < w->addr_cnt; idx++) {
 #ifndef NDEBUG
             const struct q_conn * const c =
 #endif
                 q_bind(w, idx, port[i]);
-            warn(DBG, "%s %s %s %s:%d", basename(argv[0]),
-                 c ? "waiting on" : "failed to bind to", ifname,
-                 w_ntop(&w->ifaddr[idx].addr, ip_tmp), port[i]);
+            warn(DBG, "%s %s %s %s%s%s:%d", basename(argv[0]),
+                 c ? "listening on" : "failed to bind to", ifname,
+                 w->ifaddr[idx].addr.af == AF_INET6 ? "[" : "",
+                 w_ntop(&w->ifaddr[idx].addr, ip_tmp),
+                 w->ifaddr[idx].addr.af == AF_INET6 ? "]" : "", port[i]);
         }
     }
 
+    khash_t(strm_cache) sc = {0};
     bool first_conn = true;
     http_parser_settings settings = {.on_url = serve_cb};
 
@@ -340,6 +377,7 @@ int main(int argc, char * argv[])
         struct q_conn * c;
         const bool have_active =
             q_ready(w, first_conn ? 0 : timeout * NS_PER_S, &c);
+        // warn(ERR, "%u %u", first_conn, have_active);
         if (c == 0) {
             if (have_active == false && timeout)
                 break;
@@ -348,76 +386,110 @@ int main(int argc, char * argv[])
         first_conn = false;
 
         // do we need to q_accept?
-        if (q_is_new_serv_conn(c))
+        if (q_is_new_serv_conn(c)) {
             q_accept(w, 0);
+            continue;
+        }
 
         if (q_is_conn_closed(c)) {
             q_close(c, 0, 0);
             continue;
         }
 
-        // do we need to handle a request?
-        struct cb_data d = {.c = c, .w = w, .dir = dir_fd};
-        http_parser parser = {.data = &d};
-
-    again:
-        http_parser_init(&parser, HTTP_REQUEST);
+    again:;
         struct w_iov_sq q = w_iov_sq_initializer(q);
         struct q_stream * s = q_read(c, &q, false);
 
-        if (sq_empty(&q)) {
-            if (s && q_is_stream_closed(s)) {
-                // retrieve the TX'ed request
-                q_stream_get_written(s, &q);
-#ifndef NDEBUG
-                // if we wrote a "benchmark objects", increase logging
-                const uint_t len = w_iov_sq_len(&q);
-                if (is_bench_obj(len) && --bench_cnt == 0) {
-                    util_dlevel = ini_dlevel;
-                    warn(NTE, "increasing log level after benchmark object "
-                              "transfer");
-                }
-#endif
-                q_free_stream(s);
-                q_free(&q);
-                goto again;
-            }
+        if (s == 0)
             continue;
-        }
 
         if (q_is_uni_stream(s)) {
             warn(NTE, "can't serve request on uni stream: %.*s",
                  sq_first(&q)->len, sq_first(&q)->buf);
+            goto next;
+        }
 
-        } else {
-            d.s = s;
-            d.af = sq_first(&q)->wv_af;
+        if (q_is_stream_closed(s))
+            goto next;
+
+        khiter_t k = kh_get(strm_cache, &sc, strm_key(c, s));
+        struct w_iov_sq * sq =
+            (kh_size(&sc) == 0 || k == kh_end(&sc) ? 0 : kh_val(&sc, k));
+
+        if (sq == 0) {
+            // this is a new stream, insert into stream cache
+            sq = calloc(1, sizeof(*sq));
+            ensure(sq, "calloc failed");
+            sq_init(sq);
+            int err;
+            k = kh_put(strm_cache, &sc, strm_key(c, s), &err);
+            ensure(err >= 1, "inserted returned %d", err);
+            kh_val(&sc, k) = sq;
+        }
+        sq_concat(sq, &q);
+
+        if (q_peer_closed_stream(s) && !sq_empty(sq)) {
+            // do we need to handle a request?
+            char url[8192];
+            size_t url_len = 0;
             struct w_iov * v;
-            sq_foreach (v, &q, next) {
-                if (v->len == 0)
-                    // skip empty bufs (such as pure FINs)
-                    continue;
+            sq_foreach (v, sq, next) {
+                memcpy(&url[url_len], v->buf, v->len);
+                url_len += v->len;
+            }
 
-                const size_t parsed = http_parser_execute(
-                    &parser, &settings, (char *)v->buf, v->len);
-                if (parsed != v->len) {
-                    warn(ERR, "HTTP parser error: %.*s", (int)(v->len - parsed),
-                         &v->buf[parsed]);
-                    hexdump(v->buf, v->len);
-                    // XXX the strnlen() test is super-hacky
-                    if (strnlen((char *)v->buf, v->len) == v->len)
-                        send_err(&d, 400);
-                    else
-                        send_err(&d, 505);
-                    ret = 1;
-                }
-                q_free(&q);
-                goto again;
+            http_parser parser = {
+                .data = &(struct cb_data){.c = c,
+                                          .w = w,
+                                          .dir = dir_fd,
+                                          .s = s,
+                                          .af = sq_first(sq)->wv_af}};
+            http_parser_init(&parser, HTTP_REQUEST);
+
+            const size_t parsed =
+                http_parser_execute(&parser, &settings, url, url_len);
+            if (parsed != url_len) {
+                warn(ERR, "HTTP parser error: %.*s", (int)(url_len - parsed),
+                     &url[parsed]);
+                // XXX the strnlen() test is super-hacky
+                if (strnlen(url, url_len) == url_len)
+                    send_err(parser.data, 400);
+                else
+                    send_err(parser.data, 505);
+                ret = 1;
+                continue;
             }
         }
+
+    next:
+        if (q_is_stream_closed(s)) {
+            // retrieve the TX'ed request
+            q_stream_get_written(s, &q);
+#ifndef NDEBUG
+            // if we wrote a "benchmark objects", increase logging
+            const uint_t len = w_iov_sq_len(&q);
+            if (is_bench_obj(len) && --bench_cnt == 0) {
+                util_dlevel = ini_dlevel;
+                warn(NTE, "increasing log level after benchmark object "
+                          "transfer");
+            }
+#endif
+            k = kh_get(strm_cache, &sc, strm_key(c, s));
+            ensure(kh_size(&sc) && k != kh_end(&sc), "found");
+            sq = kh_val(&sc, k);
+            q_free(sq);
+            free(sq);
+            kh_del(strm_cache, &sc, k);
+            q_free_stream(s);
+            q_free(&q);
+        }
+        goto again;
     }
 
     q_cleanup(w);
-    warn(DBG, "%s exiting", basename(argv[0]));
+    struct w_iov_sq * sq;
+    kh_foreach_value(&sc, sq, { free(sq); });
+    kh_release(strm_cache, &sc);
+    warn(DBG, "%s exiting with %d", basename(argv[0]), ret);
     return ret;
 }

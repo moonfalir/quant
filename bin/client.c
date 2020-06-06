@@ -29,7 +29,6 @@
 #include <fcntl.h>
 #include <libgen.h>
 #include <limits.h>
-#include <math.h>
 #include <net/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -45,6 +44,10 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifdef __FreeBSD__
+#include <sys/stat.h>
+#endif
+
 #define klib_unused
 
 #include <http_parser.h>
@@ -59,8 +62,7 @@
 #define bps(bytes, secs)                                                       \
     __extension__({                                                            \
         static char _str[32];                                                  \
-        const double _bps =                                                    \
-            (bytes) && (fpclassify(secs) != FP_ZERO) ? (bytes)*8 / (secs) : 0; \
+        const double _bps = ((secs) > 1e-9) ? (double)(bytes)*8 / (secs) : 0;  \
         if (_bps > NS_PER_S)                                                   \
             snprintf(_str, sizeof(_str), "%.3f Gb/s", _bps / NS_PER_S);        \
         else if (_bps > US_PER_S)                                              \
@@ -75,21 +77,22 @@
 
 struct conn_cache_entry {
     struct q_conn * c;
-#ifndef NO_MIGRATION
+    struct addrinfo * migr_peer;
     bool migrated;
     uint8_t _unused[7];
-#endif
 };
 
 
 KHASH_MAP_INIT_INT64(conn_cache, struct conn_cache_entry *)
 
 
-static uint32_t vers = 0xbabababa;
+static uint32_t vers = 0;
 static uint32_t timeout = 10;
 static uint32_t num_bufs = 100000;
 static uint32_t reps = 1;
 static bool do_h3 = false;
+static bool do_v6 = false;
+static bool do_chacha = false;
 static bool flip_keys = false;
 static bool zlen_cids = false;
 static bool write_files = false;
@@ -102,7 +105,7 @@ static bool switch_ip = false;
 
 struct stream_entry {
     sl_entry(stream_entry) next;
-    struct q_conn * c;
+    struct conn_cache_entry * cce;
     struct q_stream * s;
     char * url;
     struct timespec req_t;
@@ -127,16 +130,20 @@ conn_cache_key(const struct sockaddr * const sock)
 }
 
 
-static void __attribute__((noreturn, nonnull)) usage(const char * const name,
-                                                     const char * const ifname,
-                                                     const char * const cache,
-                                                     const char * const tls_log,
-                                                     const char * const qlog,
-                                                     const bool verify_certs)
+static void __attribute__((noreturn, nonnull))
+usage(const char * const name,
+      const char * const ifname,
+      const char * const cache,
+      const char * const tls_log,
+      const char * const qlog_dir,
+      const bool verify_certs)
 {
     printf("%s [options] URL [URL...]\n", name);
     printf("\t[-3]\t\tsend a static H3 request; default %s\n",
            do_h3 ? "true" : "false");
+    printf("\t[-6]\t\tuse IPv6; default %s\n", do_v6 ? "true" : "false");
+    printf("\t[-a]\t\tforce Chacha20; default %s\n",
+           do_chacha ? "true" : "false");
     printf("\t[-b bufs]\tnumber of network buffers to allocate; default %u\n",
            num_bufs);
     printf("\t[-c]\t\tverify TLS certificates; default %s\n",
@@ -153,8 +160,8 @@ static void __attribute__((noreturn, nonnull)) usage(const char * const name,
            "default %s\n",
            rebind ? "true" : "false");
 #endif
-    printf("\t[-q log]\twrite qlog events to file; default %s\n",
-           *qlog ? qlog : "false");
+    printf("\t[-q log]\twrite qlog events to directory; default %s\n",
+           *qlog_dir ? qlog_dir : "false");
     printf("\t[-r reps]\trepetitions for all URLs; default %u\n", reps);
     printf("\t[-s cache]\tTLS 0-RTT state cache; default %s\n", cache);
     printf("\t[-t timeout]\tidle timeout in seconds; default %u\n", timeout);
@@ -193,6 +200,37 @@ set_from_url(char * const var,
 }
 
 
+#ifndef NO_MIGRATION
+static void __attribute__((nonnull(1)))
+try_migrate(struct conn_cache_entry * const cce)
+{
+    if (rebind && cce->migrated == false)
+        cce->migrated = q_migrate(cce->c, switch_ip,
+                                  cce->migr_peer ? cce->migr_peer->ai_addr : 0);
+}
+#else
+#define try_migrate(...)
+#endif
+
+
+static struct addrinfo * __attribute__((nonnull))
+get_addr(const int af, const char * const dest, const char * const port)
+{
+    struct addrinfo * peer = 0;
+    const int err = getaddrinfo(
+        dest, port, &(const struct addrinfo){.ai_family = af}, &peer);
+    if (err == 0)
+        return peer;
+
+    if (err != EAI_FAMILY && err != EAI_NONAME)
+        // when looking up migr_peer, these errors are OK to occur
+        warn(ERR, "getaddrinfo: %s", gai_strerror(err));
+    if (peer)
+        freeaddrinfo(peer);
+    return 0;
+}
+
+
 static struct q_conn * __attribute__((nonnull))
 get(char * const url, struct w_engine * const w, khash_t(conn_cache) * cc)
 {
@@ -210,24 +248,21 @@ get(char * const url, struct w_engine * const w, khash_t(conn_cache) * cc)
     // extract relevant info from URL
     char dest[1024];
     char port[64];
-    char path[2048];
+    char path[8192];
     set_from_url(dest, sizeof(dest), url, &u, UF_HOST, "localhost");
     set_from_url(port, sizeof(port), url, &u, UF_PORT, "4433");
     set_from_url(path, sizeof(path), url, &u, UF_PATH, "/index.html");
 
-    struct addrinfo * peer = 0;
-    const int err = getaddrinfo(dest, port, 0, &peer);
-    if (err) {
-        warn(ERR, "getaddrinfo: %s", gai_strerror(err));
-        if (peer)
-            freeaddrinfo(peer);
-        return 0;
-    }
+    struct addrinfo * const peer =
+        get_addr(do_v6 ? AF_INET6 : AF_INET, dest, port);
+    struct addrinfo * const migr_peer =
+        get_addr(do_v6 ? AF_INET : AF_INET6, dest, port);
+    if (peer == 0)
+        goto fail;
 
     // do we have a connection open to this peer?
     khiter_t k = kh_get(conn_cache, cc, conn_cache_key(peer->ai_addr));
-    struct conn_cache_entry * cce =
-        (k == kh_end(cc) ? 0 : kh_val(cc, k)); // NOLINT
+    struct conn_cache_entry * cce = (k == kh_end(cc) ? 0 : kh_val(cc, k));
 
     // add to stream list
     struct stream_entry * se = calloc(1, sizeof(*se));
@@ -237,7 +272,7 @@ get(char * const url, struct w_engine * const w, khash_t(conn_cache) * cc)
 
     sq_init(&se->req);
     if (do_h3) {
-        q_alloc(w, &se->req, se->c, peer->ai_family, 1024);
+        q_alloc(w, &se->req, 0, peer->ai_family, 1024);
         struct w_iov * const v = sq_first(&se->req);
         const uint16_t len =
             (uint16_t)(h3zero_create_request_header_frame(
@@ -258,7 +293,7 @@ get(char * const url, struct w_engine * const w, khash_t(conn_cache) * cc)
 
     } else {
         // assemble an HTTP/0.9 request
-        char req_str[MAXPATHLEN + 6];
+        char req_str[sizeof(path) + 6];
         const int req_str_len =
             snprintf(req_str, sizeof(req_str), "GET %s\r\n", path);
         q_chunk_str(w, cce ? cce->c : 0, peer->ai_family, req_str,
@@ -270,18 +305,10 @@ get(char * const url, struct w_engine * const w, khash_t(conn_cache) * cc)
         clock_gettime(CLOCK_MONOTONIC, &se->req_t);
         // no, open a new connection
         struct q_conn * const c = q_connect(
-            w, peer->ai_addr, dest,
-#ifndef NO_MIGRATION
-            rebind ? 0 : &se->req, rebind ? 0 : &se->s,
-#else
-            &se->req, &se->s,
-#endif
-            true,
+            w, peer->ai_addr, dest, &se->req, &se->s, true,
             do_h3 ? "h3-" DRAFT_VERSION_STRING : "hq-" DRAFT_VERSION_STRING, 0);
-        if (c == 0) {
-            freeaddrinfo(peer);
-            return 0;
-        }
+        if (c == 0)
+            goto fail;
 
         if (do_h3) {
             // we need to open a uni stream for an empty H/3 SETTINGS frame
@@ -298,6 +325,7 @@ get(char * const url, struct w_engine * const w, khash_t(conn_cache) * cc)
         cce = calloc(1, sizeof(*cce));
         ensure(cce, "calloc failed");
         cce->c = c;
+        cce->migr_peer = migr_peer;
 
         // insert into connection cache
         int ret;
@@ -306,44 +334,35 @@ get(char * const url, struct w_engine * const w, khash_t(conn_cache) * cc)
         kh_val(cc, k) = cce;
     }
 
-    if (opened_new == false
-#ifndef NO_MIGRATION
-        || (rebind && cce->migrated == false)
-#endif
-    ) {
+    if (opened_new == false) {
         se->s = q_rsv_stream(cce->c, true);
         if (se->s) {
             clock_gettime(CLOCK_MONOTONIC, &se->req_t);
             q_write(se->s, &se->req, true);
-#ifndef NO_MIGRATION
-            if (rebind && cce->migrated == false) {
-                // try and find an IP address of another AF
-                struct addrinfo * other_peer = peer->ai_next;
-                while (other_peer) {
-                    if (other_peer->ai_family != peer->ai_family)
-                        break;
-                    other_peer = other_peer->ai_next;
-                }
-                q_migrate(cce->c, switch_ip,
-                          other_peer ? other_peer->ai_addr : 0);
-                cce->migrated = true; // only rebind once
-            }
-#endif
         }
     }
+    try_migrate(cce);
 
-    se->c = cce->c;
+    se->cce = cce;
     se->url = url;
     freeaddrinfo(peer);
-    return cce->c; // NOLINT
+    return cce->c;
+
+fail:
+    freeaddrinfo(peer);
+    freeaddrinfo(migr_peer);
+    return 0;
 }
 
 
 static void __attribute__((nonnull)) free_cc(khash_t(conn_cache) * cc)
 {
     struct conn_cache_entry * cce;
-    kh_foreach_value(cc, cce, { free(cce); });
-    kh_destroy(conn_cache, cc);
+    kh_foreach_value(cc, cce, {
+        freeaddrinfo(cce->migr_peer);
+        free(cce);
+    });
+    kh_release(conn_cache, cc);
 }
 
 
@@ -413,9 +432,9 @@ int main(int argc, char * argv[])
     int ch;
     char cache[MAXPATHLEN] = "/tmp/" QUANT "-session";
     char tls_log[MAXPATHLEN] = "";
-    char qlog[MAXPATHLEN] = "";
+    char qlog_dir[MAXPATHLEN] = "";
     bool verify_certs = false;
-    int ret = 0;
+    int ret = -1;
 
     // set default TLS log file from environment
     const char * const keylog = getenv("SSLKEYLOGFILE");
@@ -425,7 +444,7 @@ int main(int argc, char * argv[])
     }
 
     while ((ch = getopt(argc, argv,
-                        "hi:v:s:t:l:cu3zb:wr:q:me:"
+                        "hi:v:s:t:l:cu36azb:wr:q:me:"
 #ifndef NO_MIGRATION
                         "n"
 #endif
@@ -438,7 +457,7 @@ int main(int argc, char * argv[])
             strncpy(cache, optarg, sizeof(cache) - 1);
             break;
         case 'q':
-            strncpy(qlog, optarg, sizeof(qlog) - 1);
+            strncpy(qlog_dir, optarg, sizeof(qlog_dir) - 1);
             break;
         case 't':
             timeout = (uint32_t)MIN(600, strtoul(optarg, 0, 10)); // 10 min
@@ -464,6 +483,12 @@ int main(int argc, char * argv[])
         case '3':
             do_h3 = true;
             break;
+        case '6':
+            do_v6 = true;
+            break;
+        case 'a':
+            do_chacha = true;
+            break;
         case 'z':
             zlen_cids = true;
             break;
@@ -488,7 +513,7 @@ int main(int argc, char * argv[])
         case 'h':
         case '?':
         default:
-            usage(basename(argv[0]), ifname, cache, tls_log, qlog,
+            usage(basename(argv[0]), ifname, cache, tls_log, qlog_dir,
                   verify_certs);
         }
     }
@@ -499,25 +524,29 @@ int main(int argc, char * argv[])
             .conn_conf =
                 &(struct q_conn_conf){.enable_tls_key_updates = flip_keys,
                                       .enable_spinbit = true,
+                                      .enable_udp_zero_checksums = true,
                                       .idle_timeout = timeout,
                                       .version = vers,
                                       .enable_quantum_readiness_test = test_qr},
-            .qlog = *qlog ? qlog : 0,
+            .qlog_dir = *qlog_dir ? qlog_dir : 0,
+            .force_chacha20 = do_chacha,
             .num_bufs = num_bufs,
             .ticket_store = cache,
             .tls_log = *tls_log ? tls_log : 0,
             .client_cid_len = zlen_cids ? 0 : 4,
             .enable_tls_cert_verify = verify_certs});
-    khash_t(conn_cache) * cc = kh_init(conn_cache);
+    khash_t(conn_cache) cc = {0};
 
     if (reps > 1)
         puts("size\ttime\t\tbps\t\turl");
+    double sum_len = 0;
+    double sum_elapsed = 0;
     for (uint64_t r = 1; r <= reps; r++) {
         int url_idx = optind;
         while (url_idx < argc) {
             // open a new connection, or get an open one
             warn(INF, "%s retrieving %s", basename(argv[0]), argv[url_idx]);
-            get(argv[url_idx++], w, cc);
+            get(argv[url_idx++], w, &cc);
         }
 
         // collect the replies
@@ -528,12 +557,12 @@ int main(int argc, char * argv[])
             struct stream_entry * se = 0;
             struct stream_entry * tmp = 0;
             sl_foreach_safe (se, &sl, next, tmp) {
-                if (se->c == 0 || se->s == 0 || q_is_conn_closed(se->c)) {
+                if (se->cce == 0 || se->cce->c == 0 || se->s == 0) {
                     sl_remove(&sl, se, stream_entry, next);
                     free_se(se);
                     continue;
                 }
-
+                try_migrate(se->cce);
                 rxed_new |= q_read_stream(se->s, &se->rep, false);
 
                 const bool is_closed = q_peer_closed_stream(se->s);
@@ -542,10 +571,12 @@ int main(int argc, char * argv[])
                     clock_gettime(CLOCK_MONOTONIC, &se->rep_t);
             }
 
-            if (rxed_new == false) {
+            if (rxed_new == false && all_closed == false) {
                 struct q_conn * c;
                 q_ready(w, timeout * NS_PER_S, &c);
                 if (c == 0)
+                    break;
+                if (q_is_conn_closed(c))
                     break;
             }
 
@@ -554,23 +585,28 @@ int main(int argc, char * argv[])
         // print/save the replies
         while (sl_empty(&sl) == false) {
             struct stream_entry * const se = sl_first(&sl);
-            ret |= w_iov_sq_cnt(&se->rep) == 0;
+            if (ret == -1)
+                ret = w_iov_sq_cnt(&se->rep) == 0;
+            else
+                ret |= w_iov_sq_cnt(&se->rep) == 0;
 
             struct timespec diff;
             timespec_sub(&se->rep_t, &se->req_t, &diff);
             const double elapsed = timespec_to_double(diff);
+            const uint_t rep_len = w_iov_sq_len(&se->rep);
+            sum_len += (double)rep_len;
+            sum_elapsed += elapsed;
             if (reps > 1)
-                printf("%" PRIu "\t%f\t\"%s\"\t%s\n", w_iov_sq_len(&se->rep),
-                       elapsed, bps(w_iov_sq_len(&se->rep), elapsed), se->url);
+                printf("%" PRIu "\t%f\t\"%s\"\t%s\n", rep_len, elapsed,
+                       bps(rep_len, elapsed), se->url);
 #ifndef NDEBUG
             char cid_str[64];
-            q_cid(se->c, cid_str, sizeof(cid_str));
+            q_cid_str(se->cce->c, cid_str, sizeof(cid_str));
             warn(WRN,
                  "read %" PRIu
                  " byte%s in %.3f sec (%s) on conn %s strm %" PRIu,
-                 w_iov_sq_len(&se->rep), plural(w_iov_sq_len(&se->rep)),
-                 elapsed < 0 ? 0 : elapsed,
-                 bps(w_iov_sq_len(&se->rep), elapsed), cid_str, q_sid(se->s));
+                 rep_len, plural(rep_len), elapsed < 0 ? 0 : elapsed,
+                 bps(rep_len, elapsed), cid_str, q_sid(se->s));
 #endif
 
             // retrieve the TX'ed request
@@ -619,9 +655,12 @@ int main(int argc, char * argv[])
         }
     }
 
-    free_cc(cc);
+    if (reps > 1)
+        printf("TOTAL: %s\n", bps(sum_len, sum_elapsed));
+
+    free_cc(&cc);
     free_sl();
     q_cleanup(w);
-    warn(DBG, "%s exiting", basename(argv[0]));
+    warn(DBG, "%s exiting with %d", basename(argv[0]), ret);
     return ret;
 }

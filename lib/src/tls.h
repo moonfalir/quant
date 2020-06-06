@@ -42,6 +42,7 @@ struct w_iov;           // IWYU pragma: no_forward_declare w_iov
 
 // IWYU pragma: no_include <quant/quant.h>
 // IWYU pragma: no_include "quic.h"
+// IWYU pragma: no_include "cid.h"
 
 
 #ifdef FUZZING
@@ -122,22 +123,26 @@ enc_aead(const struct w_iov * const v,
          struct w_iov * const xv,
          const uint16_t pkt_nr_pos);
 
-extern void __attribute__((nonnull)) make_rtry_tok(struct q_conn * const c);
+extern void __attribute__((nonnull))
+mk_rtry_tok(struct q_conn * const c, const struct cid * const odcid);
 
 extern bool __attribute__((nonnull)) verify_rtry_tok(struct q_conn * const c,
                                                      const uint8_t * const tok,
                                                      const uint16_t tok_len);
 
-extern void __attribute__((nonnull)) make_rit(const struct q_conn * const c,
-                                              const uint8_t flags,
-                                              const struct cid * const dcid,
-                                              const struct cid * const scid,
-                                              const uint8_t * const tok,
-                                              const uint16_t tok_len,
-                                              uint8_t * const rit);
+extern void __attribute__((nonnull)) mk_rit(const struct q_conn * const c,
+                                            const struct cid * const odcid,
+                                            const uint8_t flags,
+                                            const struct cid * const dcid,
+                                            const struct cid * const scid,
+                                            const uint8_t * const tok,
+                                            const uint16_t tok_len,
+                                            uint8_t * const rit);
 
 extern void __attribute__((nonnull))
-flip_keys(struct q_conn * const c, const bool out);
+flip_keys(struct q_conn * const c,
+          const bool out,
+          const ptls_cipher_suite_t * const cs);
 
 extern void __attribute__((nonnull))
 maybe_flip_keys(struct q_conn * const c, const bool out);

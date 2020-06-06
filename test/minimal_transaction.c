@@ -157,10 +157,11 @@ void quic_transaction(const char * const req, const size_t req_len)
 
         const float voltage =
 #if defined(PARTICLE)
-            HAL_ADC_Read(BATT) * 0.0011224;
+            HAL_ADC_Read(BATT) * 0.0011224f;
 #else
             0;
 #endif
+        // FIXME: %f pulls in various __aeabi functions
         v->len = sprintf((char *)v->buf, "GET /5000?voltage=%f\r\n", voltage);
 
         DSTACK_LOG("DSTACK 2" DSTACK_LOG_NEWLINE);

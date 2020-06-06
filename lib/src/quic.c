@@ -29,20 +29,12 @@
 #include <netinet/in.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <sys/socket.h>
 
 #include <picotls.h>
 #include <quant/quant.h>
 #include <timeout.h>
-
-#ifdef HAVE_ASAN
-#include <sanitizer/asan_interface.h>
-#else
-#define ASAN_POISON_MEMORY_REGION(x, y)
-#define ASAN_UNPOISON_MEMORY_REGION(x, y)
-#endif
 
 #if !defined(NDEBUG) && !defined(FUZZING) && defined(FUZZER_CORPUS_COLLECTION)
 #include <errno.h>
@@ -66,12 +58,7 @@
 #include "tls.h"
 #include "tree.h"
 
-#ifndef NO_QLOG
-#include "qlog.h"
-#endif
 
-
-char __cid_str[CID_STR_LEN];
 char __srt_str[hex_str_len(SRT_LEN)];
 char __tok_str[hex_str_len(MAX_TOK_LEN)];
 char __rit_str[hex_str_len(RIT_LEN)];
@@ -105,11 +92,18 @@ void alloc_off(struct w_engine * const w,
                const uint32_t len,
                const uint16_t off)
 {
-    w_alloc_len(w, af, q, len,
-                (c && c->rec.max_pkt_size ? c->rec.max_pkt_size
-                                          : default_max_pkt_len(af)) -
-                    AEAD_LEN - off,
-                off);
+    uint16_t pkt_len = default_max_ups(af);
+    if (c && c->rec.max_ups_af) {
+        pkt_len = c->rec.max_ups;
+        if (af != c->rec.max_ups_af) {
+            if (c->rec.max_ups_af == AF_INET)
+                pkt_len -= 20;
+            else
+                pkt_len += 20;
+        }
+    }
+
+    w_alloc_len(w, af, q, len, pkt_len - AEAD_LEN - off, off);
     struct w_iov * v;
     sq_foreach (v, q, next) {
         struct pkt_meta * const m = &meta(v);
@@ -161,10 +155,11 @@ struct w_iov * alloc_iov(struct w_engine * const w,
                          struct pkt_meta ** const m)
 {
     struct w_iov * const v = w_alloc_iov(w, af, len, off);
-    ensure(v, "w_alloc_iov failed");
-    *m = &meta(v);
-    ASAN_UNPOISON_MEMORY_REGION(*m, sizeof(**m));
-    (*m)->strm_data_pos = off;
+    if (likely(v)) {
+        *m = &meta(v);
+        ASAN_UNPOISON_MEMORY_REGION(*m, sizeof(**m));
+        (*m)->strm_data_pos = off;
+    }
     return v;
 }
 
@@ -174,15 +169,16 @@ struct w_iov * dup_iov(const struct w_iov * const v,
                        const uint16_t off)
 {
     struct w_iov * const vdup = w_alloc_iov(v->w, v->wv_af, v->len - off, 0);
-    ensure(vdup, "w_alloc_iov failed");
-    if (mdup) {
-        *mdup = &meta(vdup);
-        ASAN_UNPOISON_MEMORY_REGION(*mdup, sizeof(**mdup));
+    if (likely(vdup)) {
+        if (mdup) {
+            *mdup = &meta(vdup);
+            ASAN_UNPOISON_MEMORY_REGION(*mdup, sizeof(**mdup));
+        }
+        memcpy(vdup->buf, v->buf + off, v->len - off);
+        memcpy(&vdup->saddr, &v->saddr, sizeof(v->saddr));
+        vdup->flags = v->flags;
+        vdup->ttl = v->ttl;
     }
-    memcpy(vdup->buf, v->buf + off, v->len - off);
-    memcpy(&vdup->saddr, &v->saddr, sizeof(v->saddr));
-    vdup->flags = v->flags;
-    vdup->ttl = v->ttl;
     return vdup;
 }
 
@@ -296,12 +292,15 @@ struct q_conn * q_connect(struct w_engine * const w,
     conn_to_state(c, conn_opng);
     loop_run(w, (func_ptr)q_connect, c, 0);
 
-    if (fin && early_data_stream && *early_data_stream)
+    if (fin && early_data_stream && *early_data_stream &&
+        (*early_data_stream)->state != strm_clsd)
         strm_to_state(*early_data_stream,
                       (*early_data_stream)->state == strm_hcrm ? strm_clsd
                                                                : strm_hclo);
+    c->try_0rtt = false;
 
-    if (c->state != conn_estb) {
+    if (c->state != conn_estb && c->state != conn_clsg &&
+        c->state != conn_drng) {
         warn(WRN, "%s conn %s not connected", conn_type(c), cid_str(c->scid));
         return 0;
     }
@@ -337,10 +336,14 @@ bool q_write(struct q_stream * const s,
 
     // add to stream
     if (fin) {
-        if (sq_empty(q))
+        if (sq_empty(q)) {
             alloc_off(c->w, q, s->c, q_conn_af(s->c), 1, DATA_OFFSET);
+            // cppcheck-suppress nullPointer
+            struct w_iov * const last = sq_last(q, w_iov, next);
+            ensure(last, "got last buffer");
+            last->len = 0;
+        }
         mark_fin(q);
-        // strm_to_state(s, s->state == strm_hcrm ? strm_clsd : strm_hclo);
     }
 
     warn(WRN,
@@ -358,28 +361,30 @@ bool q_write(struct q_stream * const s,
 }
 
 
+static struct q_stream * __attribute__((nonnull))
+find_ready_strm(khash_t(strms_by_id) * const sbi, const bool all)
+{
+    struct q_stream * s = 0;
+    bool found = false;
+    kh_foreach_value(sbi, s, {
+        if (s->state == strm_clsd ||
+            (!sq_empty(&s->in) && (!all || s->state == strm_hcrm))) {
+            found = true;
+            break;
+        }
+    });
+
+    // stream is closed, or has data (and a a FIN, if we're reading all)
+    return found ? s : 0;
+}
+
+
 struct q_stream *
 q_read(struct q_conn * const c, struct w_iov_sq * const q, const bool all)
 {
-    struct q_stream * s = 0;
-    do {
-        kh_foreach_value(&c->strms_by_id, s, {
-            if (!sq_empty(&s->in) || s->state == strm_clsd)
-                // we found a stream with queued data
-                break;
-        });
-
-        if (s == 0 && all) {
-            // no data queued on any stream, wait for new data
-            warn(WRN, "waiting to read on any strm on %s conn %s", conn_type(c),
-                 cid_str(c->scid));
-            loop_run(c->w, (func_ptr)q_read, c, 0);
-        }
-    } while (s == 0 && all);
-
-    if (s && s->state != strm_clsd)
-        q_read_stream(s, q, false);
-
+    struct q_stream * const s = find_ready_strm(&c->strms_by_id, all);
+    if (s)
+        q_read_stream(s, q, all);
     return s;
 }
 
@@ -389,8 +394,6 @@ bool q_read_stream(struct q_stream * const s,
                    const bool all)
 {
     struct q_conn * const c = s->c;
-    if (unlikely(c->state != conn_estb))
-        return 0;
 
     if (q_peer_closed_stream(s) == false && all) {
         warn(WRN, "reading all on %s conn %s strm " FMT_SID, conn_type(c),
@@ -414,6 +417,10 @@ bool q_read_stream(struct q_stream * const s,
          plural(w_iov_sq_cnt(&s->in)), conn_type(c), cid_str(c->scid), s->id);
 
     sq_concat(q, &s->in);
+
+    const struct q_stream * const sr = find_ready_strm(&c->strms_by_id, all);
+    c->have_new_data = sr != 0;
+
     if (all && m_last->is_fin == false)
         goto again;
 
@@ -472,7 +479,7 @@ static void __attribute__((nonnull))
 restart_api_alarm(struct w_engine * const w, const uint64_t nsec)
 {
 #ifdef DEBUG_TIMERS
-    warn(DBG, "next API alarm in %.3f sec", nsec / (double)NS_PER_S);
+    warn(DBG, "next API alarm in %.3f sec", (double)nsec / NS_PER_S);
 #endif
 
     timeouts_add(ped(w)->wheel, &ped(w)->api_alarm, nsec);
@@ -585,6 +592,7 @@ struct w_engine * q_init(const char * const ifname,
     w->data = calloc(1, sizeof(struct per_engine_data) + w->mtu);
     ensure(w->data, "could not calloc");
     ped(w)->scratch_len = w->mtu;
+    poison_scratch(ped(w)->scratch, ped(w)->scratch_len);
 
     ped(w)->pkt_meta = calloc(num_bufs, sizeof(*ped(w)->pkt_meta));
     ensure(ped(w)->pkt_meta, "could not calloc");
@@ -650,7 +658,7 @@ struct w_engine * q_init(const char * const ifname,
     loop_init();
     int err;
     ped(w)->wheel = timeouts_open(TIMEOUT_nHZ, &err);
-    timeouts_update(ped(w)->wheel, loop_now());
+    timeouts_update(ped(w)->wheel, w_now());
     timeout_setcb(&ped(w)->api_alarm, cancel_api_call, &ped(w)->api_alarm);
 
     warn(INF, "%s/%s (%s) %s/%s ready", quant_name, w->backend_name,
@@ -669,13 +677,6 @@ struct w_engine * q_init(const char * const ifname,
     corpus_pkt_dir = mk_or_open_dir("../corpus_pkt", 0755);
     corpus_frm_dir = mk_or_open_dir("../corpus_frm", 0755);
 #endif
-#endif
-
-#ifndef NO_QLOG
-    if (conf && conf->qlog) {
-        ped(w)->qlog = fopen(conf->qlog, "we");
-        ensure(ped(w)->qlog, "fopen %s", conf->qlog);
-    }
 #endif
 
     return w;
@@ -734,6 +735,7 @@ void q_close(struct q_conn * const c,
 #ifndef NO_ERR_REASONS
     if (reason) {
         strncpy(c->err_reason, reason, MAX_ERR_REASON_LEN);
+        c->err_reason[MAX_ERR_REASON_LEN - 1] = 0;
         c->err_reason_len = (uint8_t)strnlen(reason, MAX_ERR_REASON_LEN);
     }
 #endif
@@ -743,7 +745,7 @@ void q_close(struct q_conn * const c,
         // we don't need to do the closing dance in these cases
         goto done;
 
-    if (c->state != conn_drng) {
+    if (c->state != conn_clsg && c->state != conn_drng) {
         conn_to_state(c, conn_qlse);
         timeouts_add(ped(c->w)->wheel, &c->tx_w, 0);
     }
@@ -829,15 +831,12 @@ done:
         qinfo_log("strm_frms_in_ign = %" PRIu, c->i.strm_frms_in_ign);
     }
 #endif
-#ifndef NO_QLOG
-    if (ped(c->w)->qlog)
-        fflush(ped(c->w)->qlog);
-#endif
+
     if (c->scid == 0)
         sl_remove(&c_zcid, c, q_conn, node_zcid_int);
 
 #ifndef NO_SERVER
-    if (c->holds_sock && w_connected(c->sock) == false)
+    if (is_clnt(c) == false && c->holds_sock && w_connected(c->sock) == false)
         sl_remove(&c_embr, c, q_conn, node_embr);
 #endif
     free_conn(c);
@@ -898,10 +897,6 @@ void q_cleanup(struct w_engine * const w)
     kh_release(conns_by_srt, &conns_by_srt);
 #endif
 
-#ifndef NO_QLOG
-    qlog_close(ped(w)->qlog);
-#endif
-
 #ifndef NO_SERVER
     kv_destroy(ped(w)->serv_socks);
 #endif
@@ -918,14 +913,23 @@ void q_cleanup(struct w_engine * const w)
 }
 
 
+void q_cid(struct q_conn * const c, uint8_t * const buf, size_t * const buf_len)
+{
+    ensure(*buf_len >= CID_LEN_MAX, "buf too short (need at least %d)",
+           CID_LEN_MAX);
+
+    memcpy(buf, c->odcid.id, c->odcid.len);
+    *buf_len = c->odcid.len;
+}
+
+
 const char *
-q_cid(struct q_conn * const c, char * const buf, const size_t buf_len)
+q_cid_str(struct q_conn * const c, char * const buf, const size_t buf_len)
 {
     ensure(buf_len >= hex_str_len(CID_LEN_MAX),
-           "buf too short (need at least %lu)",
-           (unsigned long)hex_str_len(CID_LEN_MAX));
-    if (likely(c->scid))
-        hex2str(c->scid->id, c->scid->len, buf, buf_len);
+           "buf too short (need at least %d)", hex_str_len(CID_LEN_MAX));
+    if (c->odcid.len)
+        hex2str(c->odcid.id, c->odcid.len, buf, buf_len);
     else
         *buf = 0;
     return buf;
@@ -996,22 +1000,22 @@ bool q_ready(struct w_engine * const w,
 
     struct q_conn * const c = sl_first(&c_ready);
     if (c) {
-        sl_remove_head(&c_ready, node_rx_ext);
-        c->have_new_data = c->in_c_ready = false;
-#if !defined(NDEBUG) && defined(DEBUG_EXTRA)
-        char * op = "rx";
+        bool remove = true;
 #ifndef NO_SERVER
         if (c->needs_accept)
-            op = "accept";
-        else
+            remove = c->have_new_data == false;
 #endif
-            if (c->state == conn_clsd)
-            op = "close";
-        warn(WRN, "%s conn %s ready to %s", conn_type(c), cid_str(c->scid), op);
-    } else {
-        warn(WRN, "no conn ready to rx");
+#ifdef DEBUG_EXTRA
+        warn(WRN, "%s conn %s ready to %s", conn_type(c), cid_str(c->scid),
+             c->needs_accept ? "accept"
+                             : (c->state == conn_clsd ? "close" : "rx"));
 #endif
-    }
+        if (remove) {
+            sl_remove_head(&c_ready, node_rx_ext);
+            c->in_c_ready = false;
+        }
+    } else
+        warn(WRN, "no conn ready");
     *ready = c;
 done:
 #ifndef NO_MIGRATION
@@ -1043,18 +1047,27 @@ int q_conn_af(const struct q_conn * const c)
 
 
 #ifndef NO_MIGRATION
-void q_migrate(struct q_conn * const c,
+bool q_migrate(struct q_conn * const c,
                const bool switch_ip,
                const struct sockaddr * const alt_peer)
 {
+    // make sure we have a dcid to migrate to
+    if (switch_ip && next_cid(&c->dcids, c->dcid->seq) == 0) {
+#ifdef DEBUG_EXTRA
+        warn(DBG, "no new dcid available, can't migrate");
+#endif
+        return false;
+    }
+
     ensure(is_clnt(c), "can only rebind w_sock on client");
+    struct w_engine * const w = c->w;
 
     // find the index of the currently used local address
     uint16_t idx;
-    for (idx = 0; idx < c->w->addr_cnt; idx++)
-        if (w_addr_cmp(&c->w->ifaddr[idx].addr, &c->sock->ws_laddr))
+    for (idx = 0; idx < w->addr_cnt; idx++)
+        if (w_addr_cmp(&w->ifaddr[idx].addr, &c->sock->ws_laddr))
             break;
-    ensure(idx < c->w->addr_cnt, "could not find local address index");
+    ensure(idx < w->addr_cnt, "could not find local address index");
 
 #ifndef NDEBUG
     char old_ip[IP_STRLEN];
@@ -1066,43 +1079,42 @@ void q_migrate(struct q_conn * const c,
     if (switch_ip) {
         // try and find an IP address of another AF
         uint16_t other_idx;
-        for (other_idx = 0; other_idx < c->w->addr_cnt; other_idx++)
-            if (c->w->ifaddr[idx].addr.af != c->w->ifaddr[other_idx].addr.af)
+        for (other_idx = 0; other_idx < w->addr_cnt; other_idx++)
+            if (w->ifaddr[idx].addr.af != w->ifaddr[other_idx].addr.af &&
+                (w->ifaddr[other_idx].addr.af == AF_INET6 &&
+                 !w_is_private(&w->ifaddr[other_idx].addr)))
                 break;
 
         // use corresponding preferred_address as peer
-        if (other_idx < c->w->addr_cnt) {
+        if (other_idx < w->addr_cnt) {
             idx = other_idx;
             if (alt_peer) {
                 w_to_waddr(&c->peer.addr, alt_peer);
-            } else if ((c->w->ifaddr[other_idx].addr.af == AF_INET &&
+            } else if ((w->ifaddr[other_idx].addr.af == AF_INET &&
                         memcmp(&c->tp_peer.pref_addr.addr4.addr.ip4,
                                &(char[IP4_LEN]){0}, IP4_LEN) != 0) ||
-                       (c->w->ifaddr[other_idx].addr.af == AF_INET6 &&
+                       (w->ifaddr[other_idx].addr.af == AF_INET6 &&
                         memcmp(&c->tp_peer.pref_addr.addr6.addr.ip4,
                                &(char[IP6_LEN]){0}, IP6_LEN) != 0)) {
-                c->peer = c->w->ifaddr[other_idx].addr.af == AF_INET
+                c->peer = w->ifaddr[other_idx].addr.af == AF_INET
                               ? c->tp_peer.pref_addr.addr4
                               : c->tp_peer.pref_addr.addr6;
             } else
                 goto fail;
         }
-
-        // make sure we have a dcid to migrate to
-        if (splay_next(cids_by_seq, &c->dcids_by_seq, c->dcid) == 0)
-            goto fail;
+        c->needs_tx = true;
     }
 
-    struct w_sock * const new_sock = w_bind(c->w, idx, 0, &c->sockopt);
+    struct w_sock * const new_sock = w_bind(w, idx, 0, &c->sockopt);
     if (new_sock == 0) {
     fail:
         // could not open new w_sock, can't rebind
-        warn(ERR, "%s for %s conn %s from %s%s%s:%u failed",
+        warn(ERR, "%s failed for %s conn %s from %s%s%s:%u",
              switch_ip ? "conn migration" : "simulated NAT rebinding",
              conn_type(c), c->scid ? cid_str(c->scid) : "-",
              old_af == AF_INET6 ? "[" : "", old_ip,
              old_af == AF_INET6 ? "]" : "", old_port);
-        return;
+        return false;
     }
 
     // close the current w_sock
@@ -1131,10 +1143,11 @@ void q_migrate(struct q_conn * const c,
          old_ip, old_af == AF_INET6 ? "]" : "", old_port,
          c->sock->ws_laddr.af == AF_INET6 ? "[" : "",
          w_ntop(&c->sock->ws_laddr, ip_tmp),
-         c->sock->ws_laddr.af == AF_INET6 ? "[" : "",
+         c->sock->ws_laddr.af == AF_INET6 ? "]" : "",
          bswap16(c->sock->ws_lport));
 
-    timeouts_add(ped(c->w)->wheel, &c->tx_w, 0);
+    timeouts_add(ped(w)->wheel, &c->tx_w, 0);
+    return true;
 }
 #endif
 
@@ -1185,39 +1198,4 @@ char * hex2str(const uint8_t * const src,
     }
 
     return dst;
-}
-
-
-const char *
-cid2str(const struct cid * const cid, char * const dst, const size_t len_dst)
-{
-    const int n = snprintf(dst, len_dst, "%" PRIu ":", cid ? cid->seq : 0);
-    if (cid)
-        hex2str(cid->id, cid->len, &dst[n], len_dst - (size_t)n);
-    return dst;
-}
-
-
-void mk_rand_cid(struct cid * const cid,
-                 const uint8_t len,
-                 const bool srt
-#ifdef NO_SRT_MATCHING
-                 __attribute__((unused))
-#endif
-)
-{
-    // len==0 means zero-len cid
-    if (len) {
-        // illegal len means randomize
-        cid->len = len <= CID_LEN_MAX
-                       ? len
-                       : 8 + (uint8_t)w_rand_uniform32(CID_LEN_MAX - 7);
-        rand_bytes(cid->id, cid->len);
-    }
-
-#ifndef NO_SRT_MATCHING
-    cid->has_srt = srt;
-    if (srt)
-        rand_bytes(cid->srt, sizeof(cid->srt));
-#endif
 }

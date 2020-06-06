@@ -33,6 +33,7 @@
 
 #include <warpcore/warpcore.h>
 
+#include "cid.h"
 #include "conn.h"
 #include "quic.h"
 #include "tls.h"
@@ -42,7 +43,7 @@ struct q_stream; // IWYU pragma: no_forward_declare q_stream
 
 
 #define MIN_INI_LEN 1200
-#define MAX_PKT_LEN 65527
+#define MAX_UPS 65527
 #define MIN_SRT_PKT_LEN 5 + SRT_LEN ///< min SRT length, incl. the fixed bits
 
 #define HEAD_FORM 0x80      ///< header form (1 = long, 0 = short)
@@ -64,16 +65,18 @@ struct q_stream; // IWYU pragma: no_forward_declare q_stream
 
 
 #define ERR_NONE 0x0
-#define ERR_INTERNAL 0x1
-#define ERR_FLOW_CONTROL 0x3
-#define ERR_STREAM_ID 0x4
-#define ERR_STREAM_STATE 0x5
-// #define ERR_FINAL_SIZE 0x6
-#define ERR_FRAME_ENC 0x7
-#define ERR_TRANSPORT_PARAMETER 0x8
-#define ERR_CONNECTION_ID_LIMIT 0x9
-#define ERR_PROTOCOL_VIOLATION 0xa
-#define ERR_INVALID_TOKEN 0xb
+#define ERR_INTL 0x1
+// #define ERR_SERVER_BUSY 0x2
+#define ERR_FC 0x3
+#define ERR_STRM_LIMT 0x4
+#define ERR_STRM_STAT 0x5
+#define ERR_FINL_SIZE 0x6
+#define ERR_FRAM_ENC 0x7
+#define ERR_TP 0x8
+#define ERR_CID_LIMT 0x9
+#define ERR_PV 0xa
+#define ERR_INVL_TOK 0xb
+// #define ERR_APP_ERROR 0xc
 #define ERR_TLS(type) (0x100 + (type))
 
 
@@ -169,19 +172,19 @@ extern bool __attribute__((nonnull))
 dec_pkt_hdr_beginning(struct w_iov * const xv,
                       struct w_iov * const v,
                       struct pkt_meta * const m,
+                      struct w_iov_sq * const x,
                       const bool is_clnt,
                       uint8_t * const tok,
                       uint16_t * const tok_len,
                       uint8_t * const rit,
-                      const uint8_t dcid_len);
+                      const uint8_t dcid_len,
+                      bool * decoal);
 
 extern bool __attribute__((nonnull))
 dec_pkt_hdr_remainder(struct w_iov * const xv,
                       struct w_iov * const v,
                       struct pkt_meta * const m,
-                      struct q_conn * const c,
-                      struct w_iov_sq * const x,
-                      bool * const decoal);
+                      struct q_conn * const c);
 
 extern struct q_conn * __attribute__((nonnull))
 is_srt(const struct w_iov * const xv, struct pkt_meta * const m);
@@ -194,8 +197,9 @@ extern bool __attribute__((nonnull)) enc_pkt(struct q_stream * const s,
                                              struct w_iov * const v,
                                              struct pkt_meta * const m);
 
-extern void __attribute__((nonnull))
-coalesce(struct w_iov_sq * const q, const uint16_t max_pkt_size);
+extern uint16_t __attribute__((nonnull)) coalesce(struct w_iov_sq * const q,
+                                                  const uint16_t max_ups,
+                                                  const bool do_pmtud);
 
 extern void __attribute__((nonnull(1, 2, 3, 4)))
 enc_lh_cids(uint8_t ** pos,
@@ -203,6 +207,8 @@ enc_lh_cids(uint8_t ** pos,
             struct pkt_meta * const m,
             const struct cid * const dcid,
             const struct cid * const scid);
+
+extern void __attribute__((nonnull)) validate_pmtu(struct q_conn * const c);
 
 #ifndef NDEBUG
 extern void __attribute__((nonnull(1, 2, 3)))

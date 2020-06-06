@@ -28,6 +28,11 @@
 #include <inttypes.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/param.h>
+
+#ifdef __FreeBSD__
+#include <netinet/in.h>
+#endif
 
 #if !defined(PARTICLE) && !defined(RIOT_VERSION)
 #include <netinet/ip.h>
@@ -39,6 +44,7 @@
 #include <warpcore/warpcore.h>
 
 #include "bitset.h"
+#include "cid.h"
 #include "conn.h"
 #include "diet.h"
 #include "frame.h"
@@ -51,6 +57,10 @@
 #include "stream.h"
 #include "tls.h"
 
+#if defined(__linux__) && !defined(NDEBUG)
+#define IPTOS_ECN_NOTECT IPTOS_ECN_NOT_ECT
+#endif
+
 
 #define MAX_PKT_NR_LEN 4 ///< Maximum packet number length allowed by spec.
 
@@ -59,11 +69,7 @@
 
 void log_pkt(const char * const dir,
              const struct w_iov * const v,
-             const struct w_sockaddr * const saddr
-#ifdef FUZZING
-             __attribute__((unused))
-#endif
-             ,
+             const struct w_sockaddr * const saddr,
              const uint8_t * const tok,
              const uint16_t tok_len,
              const uint8_t * const rit)
@@ -79,52 +85,69 @@ void log_pkt(const char * const dir,
     const char * const tok_str = tok_len ? tok_str(tok, tok_len) : "";
     const char * const rit_str = rit ? rit_str(rit) : "";
 
+    static const char * const ecn_str[] = {[IPTOS_ECN_NOTECT] = "",
+                                           [IPTOS_ECN_ECT1] = "ECT1",
+                                           [IPTOS_ECN_ECT0] = "ECT0",
+                                           [IPTOS_ECN_CE] = "CE"};
     if (*dir == 'R') {
         if (is_lh(m->hdr.flags)) {
             if (m->hdr.vers == 0)
                 twarn(NTE,
-                      BLD BLU "RX" NRM " from=%s%s%s:%u len=%u 0x%02x=" BLU
+                      BLD BLU "RX" NRM " from=%s%s%s:%u len=%u%s%s 0x%02x=" BLU
                               "%s " NRM "vers=0x%0" PRIx32 " dcid=%s scid=%s",
                       v->wv_af == AF_INET6 ? "[" : "", ip,
                       v->wv_af == AF_INET6 ? "]" : "", port, v->len,
-                      m->hdr.flags, pts, m->hdr.vers, dcid_str, scid_str);
+                      (v->flags & IPTOS_ECN_MASK) != IPTOS_ECN_NOTECT ? " ecn="
+                                                                      : "",
+                      ecn_str[v->flags & IPTOS_ECN_MASK], m->hdr.flags, pts,
+                      m->hdr.vers, dcid_str, scid_str);
             else if (m->hdr.type == LH_RTRY)
                 twarn(NTE,
-                      BLD BLU "RX" NRM " from=%s%s%s:%u len=%u 0x%02x=" BLU
+                      BLD BLU "RX" NRM " from=%s%s%s:%u len=%u%s%s 0x%02x=" BLU
                               "%s " NRM "vers=0x%0" PRIx32
                               " dcid=%s scid=%s tok=%s rit=%s",
                       v->wv_af == AF_INET6 ? "[" : "", ip,
                       v->wv_af == AF_INET6 ? "]" : "", port, v->len,
-                      m->hdr.flags, pts, m->hdr.vers, dcid_str, scid_str,
-                      tok_str, rit_str);
+                      (v->flags & IPTOS_ECN_MASK) != IPTOS_ECN_NOTECT ? " ecn="
+                                                                      : "",
+                      ecn_str[v->flags & IPTOS_ECN_MASK], m->hdr.flags, pts,
+                      m->hdr.vers, dcid_str, scid_str, tok_str, rit_str);
             else if (m->hdr.type == LH_INIT)
                 twarn(NTE,
-                      BLD BLU "RX" NRM " from=%s%s%s:%u len=%u 0x%02x=" BLU
+                      BLD BLU "RX" NRM " from=%s%s%s:%u len=%u%s%s 0x%02x=" BLU
                               "%s " NRM "vers=0x%0" PRIx32
                               " dcid=%s scid=%s tok=%s len=%u nr=" BLU
                               "%" PRIu NRM,
                       v->wv_af == AF_INET6 ? "[" : "", ip,
                       v->wv_af == AF_INET6 ? "]" : "", port, v->len,
-                      m->hdr.flags, pts, m->hdr.vers, dcid_str, scid_str,
-                      tok_str, m->hdr.len, m->hdr.nr);
+                      (v->flags & IPTOS_ECN_MASK) != IPTOS_ECN_NOTECT ? " ecn="
+                                                                      : "",
+                      ecn_str[v->flags & IPTOS_ECN_MASK], m->hdr.flags, pts,
+                      m->hdr.vers, dcid_str, scid_str, tok_str, m->hdr.len,
+                      m->hdr.nr);
             else
                 twarn(NTE,
-                      BLD BLU "RX" NRM " from=%s%s%s:%u len=%u 0x%02x=" BLU
+                      BLD BLU "RX" NRM " from=%s%s%s:%u len=%u%s%s 0x%02x=" BLU
                               "%s " NRM "vers=0x%0" PRIx32
                               " dcid=%s scid=%s len=%u nr=" BLU "%" PRIu NRM,
                       v->wv_af == AF_INET6 ? "[" : "", ip,
                       v->wv_af == AF_INET6 ? "]" : "", port, v->len,
-                      m->hdr.flags, pts, m->hdr.vers, dcid_str, scid_str,
-                      m->hdr.len, m->hdr.nr);
+                      (v->flags & IPTOS_ECN_MASK) != IPTOS_ECN_NOTECT ? " ecn="
+                                                                      : "",
+                      ecn_str[v->flags & IPTOS_ECN_MASK], m->hdr.flags, pts,
+                      m->hdr.vers, dcid_str, scid_str, m->hdr.len, m->hdr.nr);
         } else
             twarn(NTE,
-                  BLD BLU "RX" NRM " from=%s%s%s:%u len=%u 0x%02x=" BLU
+                  BLD BLU "RX" NRM " from=%s%s%s:%u len=%u%s%s 0x%02x=" BLU
                           "%s " NRM "kyph=%u spin=%u dcid=%s nr=" BLU
                           "%" PRIu NRM,
                   v->wv_af == AF_INET6 ? "[" : "", ip,
-                  v->wv_af == AF_INET6 ? "]" : "", port, v->len, m->hdr.flags,
-                  pts, is_set(SH_KYPH, m->hdr.flags),
-                  is_set(SH_SPIN, m->hdr.flags), dcid_str, m->hdr.nr);
+                  v->wv_af == AF_INET6 ? "]" : "", port, v->len,
+                  (v->flags & IPTOS_ECN_MASK) != IPTOS_ECN_NOTECT ? " ecn="
+                                                                  : "",
+                  ecn_str[v->flags & IPTOS_ECN_MASK], m->hdr.flags, pts,
+                  is_set(SH_KYPH, m->hdr.flags), is_set(SH_SPIN, m->hdr.flags),
+                  dcid_str, m->hdr.nr);
 
     } else {
         // on TX, v->len is not yet final/correct, so don't print it
@@ -175,6 +198,16 @@ void log_pkt(const char * const dir,
 #endif
 
 
+void validate_pmtu(struct q_conn * const c)
+{
+    c->rec.max_ups = 1280;
+        //MIN(w_max_udp_payload(c->sock), (uint16_t)c->tp_peer.max_ups);
+    warn(NTE, "PMTU %u validated", c->rec.max_ups);
+    c->rec.max_ups_af = c->peer.addr.af;
+    c->pmtud_pkt = UINT16_MAX;
+}
+
+
 static bool __attribute__((const))
 can_coalesce_pkt_types(const uint8_t a, const uint8_t b)
 {
@@ -184,39 +217,68 @@ can_coalesce_pkt_types(const uint8_t a, const uint8_t b)
 }
 
 
-void coalesce(struct w_iov_sq * const q, const uint16_t max_pkt_size)
+uint16_t
+coalesce(struct w_iov_sq * const q, const uint16_t max_ups, const bool do_pmtud)
 {
+    uint16_t pmtud_pkt = UINT16_MAX;
     struct w_iov * v = sq_first(q);
     while (v) {
+        uint8_t skipped_types = 0;
         struct w_iov * next = sq_next(v, next);
         struct w_iov * prev = v;
         uint8_t inner_flags = *v->buf;
-        uint32_t inner_vers;
-        memcpy(&inner_vers, v->buf + 1, sizeof(inner_vers));
+#ifndef NDEBUG
+        const char * inner_type_str = pkt_type_str(*v->buf, v->buf + 1);
+        const char * const outer_type_str = inner_type_str;
+#endif
         while (next) {
+#ifndef NDEBUG
+            const char * const next_type_str =
+                pkt_type_str(*next->buf, next->buf + 1);
+#endif
             struct w_iov * const next_next = sq_next(next, next);
             // do we have space? do the packet types make sense to coalesce?
-            if (v->len + next->len > max_pkt_size) {
+            if (v->len + next->len > max_ups) {
                 warn(DBG,
-                     "cannot coalesce %u-byte pkt behind %u-byte pkt, limit %u",
-                     next->len, v->len, max_pkt_size);
+                     "cannot coalesce %u-byte %s pkt behind %u-byte %s pkt, "
+                     "limit %u",
+                     next->len, next_type_str, v->len, outer_type_str, max_ups);
+                skipped_types |= pkt_type(*next->buf);
                 prev = next;
             } else if (can_coalesce_pkt_types(pkt_type(inner_flags),
                                               pkt_type(*next->buf)) == false) {
-                warn(DBG, "cannot coalesce %s pkt behind %s pkt",
-                     pkt_type_str(*next->buf, next->buf + 1),
-                     pkt_type_str(inner_flags, &inner_vers));
+                warn(DBG, "cannot coalesce %u-byte %s pkt behind inner %s pkt",
+                     next->len, next_type_str, inner_type_str);
+                prev = next;
+            } else if (skipped_types & pkt_type(*next->buf)) {
+                warn(DBG,
+                     "cannot coalesce %u-byte %s pkt behind inner %s pkt, "
+                     "skipped one already",
+                     next->len, next_type_str, inner_type_str);
+                prev = next;
+            } else if (skipped_types && skipped_types < pkt_type(*next->buf)) {
+                warn(DBG,
+                     "cannot coalesce %u-byte %s pkt behind inner %s pkt, "
+                     "skipped 0x%02x already",
+                     next->len, next_type_str, inner_type_str, skipped_types);
+                prev = next;
+            } else if (pkt_type(*next->buf) == SH && do_pmtud) {
+                warn(DBG,
+                     "won't coalesce %u-byte %s pkt behind inner %s pkt, "
+                     "need to do PMTUD",
+                     next->len, next_type_str, inner_type_str);
                 prev = next;
             } else {
                 // we can coalesce
                 warn(INF,
-                     "coalescing %u-byte %s pkt behind %u-byte pkt, outermost "
-                     "%s, innermost %s",
-                     next->len, pkt_type_str(*next->buf, next->buf + 1), v->len,
-                     pkt_type_str(*v->buf, v->buf + 1),
-                     pkt_type_str(inner_flags, &inner_vers));
+                     "coalescing %u-byte %s pkt behind inner %u-byte %s pkt "
+                     "(outermost %s)",
+                     next->len, next_type_str, v->len, inner_type_str,
+                     outer_type_str);
                 inner_flags = *next->buf;
-                memcpy(&inner_vers, next->buf + 1, sizeof(inner_vers));
+#ifndef NDEBUG
+                inner_type_str = next_type_str;
+#endif
                 memcpy(v->buf + v->len, next->buf, next->len);
                 v->len += next->len;
                 sq_remove_after(q, prev, next);
@@ -225,8 +287,26 @@ void coalesce(struct w_iov_sq * const q, const uint16_t max_pkt_size)
             }
             next = next_next;
         }
+
+        if (do_pmtud && pmtud_pkt == UINT16_MAX && v->len < max_ups) {
+            warn(NTE,
+                 "testing PMTU %u with %s pkt %u using %u bytes rand padding",
+                 max_ups, pkt_type_str(*v->buf, v->buf + 1),
+                 v->user_data & 0x3fff, max_ups - v->len);
+            rand_bytes(v->buf + v->len, max_ups - v->len);
+            *(v->buf + v->len) &= ~LH;
+            v->len = max_ups;
+            pmtud_pkt = v->user_data;
+        }
+
         v = sq_next(v, next);
+#ifdef DEBUG_EXTRA
+        if (v)
+            warn(DBG, "coalescing txq next");
+#endif
     }
+
+    return pmtud_pkt;
 }
 
 
@@ -308,16 +388,11 @@ enc_other_frames(
     }
 
     if (c->tx_retire_cid && can_enc(pos, end, m, FRM_RTR, true)) {
-        struct cid * rcid = splay_min(cids_by_seq, &c->dcids_by_seq);
-        while (rcid && rcid->seq < c->dcid->seq) {
-            struct cid * const next =
-                splay_next(cids_by_seq, &c->dcids_by_seq, rcid);
-            if (rcid->retired) {
-                enc_retire_cid_frame(ci, pos, end, m, rcid);
-                free_dcid(c, rcid);
-            }
-            rcid = next;
-        }
+        struct cid * id = 0;
+        struct cid * tmp = 0;
+        sl_foreach_safe (id, &c->dcids.ret, next, tmp)
+            if (id->seq < c->dcid->seq)
+                enc_retire_cid_frame(ci, pos, end, m, id->seq);
     }
 
     if (c->tx_path_chlg && can_enc(pos, end, m, FRM_PCL, true))
@@ -325,7 +400,7 @@ enc_other_frames(
 
     while (c->tx_ncid && can_enc(pos, end, m, FRM_CID, false)) {
         enc_new_cid_frame(ci, pos, end, m);
-        c->tx_ncid = needs_more_ncids(c);
+        c->tx_ncid = need_more_cids(&c->scids, c->tp_peer.act_cid_lim);
     }
 #endif
 
@@ -384,13 +459,7 @@ bool enc_pkt(struct q_stream * const s,
     const epoch_t epoch = unlikely(pmtud) ? ep_hshk : strm_epoch(s);
     struct pn_space * const pn = m->pn = pn_for_epoch(c, epoch);
 
-    m->txed = true;
-#ifndef NO_SERVER
-    if (unlikely(c->tx_rtry))
-        m->hdr.nr = 0;
-    else
-#endif
-        if (unlikely(pn->lg_sent == UINT_T_MAX))
+    if (unlikely(pn->lg_sent == UINT_T_MAX))
         // next pkt nr
         m->hdr.nr = pn->lg_sent = 0;
     else
@@ -398,17 +467,8 @@ bool enc_pkt(struct q_stream * const s,
 
     switch (epoch) {
     case ep_init:
-#ifndef NO_SERVER
-        if (unlikely(c->tx_rtry))
-            m->hdr.type = LH_RTRY;
-        else
-#endif
-            m->hdr.type = LH_INIT;
+        m->hdr.type = LH_INIT;
         m->hdr.flags = LH | m->hdr.type;
-#ifndef NO_SERVER
-        if (unlikely(c->tx_rtry))
-            m->hdr.flags |= (uint8_t)w_rand_uniform32(0x0f);
-#endif
         break;
     case ep_0rtt:
         if (is_clnt(c)) {
@@ -434,9 +494,9 @@ bool enc_pkt(struct q_stream * const s,
 
     uint8_t * pos = v->buf;
     if (enc_data)
-        calc_lens_of_stream_or_crypto_frame(m, v, s);
+        calc_lens_of_stream_or_crypto_frame(m, v, s, rtx);
     const uint8_t * const end =
-        v->buf + (enc_data || rtx ? m->strm_frm_pos : v->len);
+        v->buf + ((enc_data || rtx) ? m->strm_frm_pos : v->len);
     enc1(&pos, end, m->hdr.flags);
 
     if (unlikely(is_lh(m->hdr.flags))) {
@@ -447,16 +507,11 @@ bool enc_pkt(struct q_stream * const s,
         if (m->hdr.type == LH_INIT)
             encv(&pos, end, is_clnt(c) ? c->tok_len : 0);
 
-        if (((is_clnt(c) && m->hdr.type == LH_INIT) ||
-             m->hdr.type == LH_RTRY) &&
-            c->tok_len)
+        if (is_clnt(c) && m->hdr.type == LH_INIT && c->tok_len)
             encb(&pos, end, c->tok, c->tok_len);
 
-        if (m->hdr.type != LH_RTRY) {
-            // leave space for length field (2 bytes is enough)
-            len_pos = pos;
-            pos += 2;
-        }
+        len_pos = pos;
+        pos += 2;
 
     } else {
         cid_cpy(&m->hdr.dcid, c->dcid);
@@ -464,22 +519,20 @@ bool enc_pkt(struct q_stream * const s,
     }
 
     uint8_t * pkt_nr_pos = 0;
-    if (likely(m->hdr.type != LH_RTRY)) {
-        pkt_nr_pos = pos;
-        switch ((pnl - 1) & HEAD_PNRL_MASK) {
-        case 0:
-            enc1(&pos, end, m->hdr.nr & UINT64_C(0xff));
-            break;
-        case 1:
-            enc2(&pos, end, m->hdr.nr & UINT64_C(0xffff));
-            break;
-        case 2:
-            enc3(&pos, end, m->hdr.nr & UINT64_C(0xffffff));
-            break;
-        case 3:
-            enc4(&pos, end, m->hdr.nr & UINT64_C(0xffffffff));
-            break;
-        }
+    pkt_nr_pos = pos;
+    switch ((pnl - 1) & HEAD_PNRL_MASK) {
+    case 0:
+        enc1(&pos, end, m->hdr.nr & UINT64_C(0xff));
+        break;
+    case 1:
+        enc2(&pos, end, m->hdr.nr & UINT64_C(0xffff));
+        break;
+    case 2:
+        enc3(&pos, end, m->hdr.nr & UINT64_C(0xffffff));
+        break;
+    case 3:
+        enc4(&pos, end, m->hdr.nr & UINT64_C(0xffffffff));
+        break;
     }
 
     m->hdr.hdr_len = (uint16_t)(pos - v->buf);
@@ -488,6 +541,10 @@ bool enc_pkt(struct q_stream * const s,
         unlikely(c->tx_path_chlg) ? c->migr_peer :
 #endif
                                   c->peer;
+
+    // track the flags manually, since warpcore sets them on the xv and it'd
+    // require another loop to copy them over
+    v->flags |= likely(c->sockopt.enable_ecn) ? IPTOS_ECN_ECT0 : 0;
 
 #ifndef NDEBUG
     // sanity check
@@ -498,15 +555,6 @@ bool enc_pkt(struct q_stream * const s,
         return false;
     }
 #endif
-
-    if (unlikely(m->hdr.type == LH_RTRY)) {
-        uint8_t rit[RIT_LEN];
-        make_rit(c, m->hdr.flags, &m->hdr.dcid, &m->hdr.scid, c->tok,
-                 c->tok_len, rit);
-        encb(&pos, end, rit, RIT_LEN);
-        log_pkt("TX", v, &v->saddr, c->tok, c->tok_len, rit);
-        goto tx;
-    }
 
     log_pkt("TX", v, &v->saddr, c->tok, c->tok_len, 0);
 
@@ -526,31 +574,28 @@ bool enc_pkt(struct q_stream * const s,
     if (unlikely(c->state == conn_clsg))
         enc_close_frame(ci, &pos, end, m);
     else if (epoch == ep_data || (!is_clnt(c) && epoch == ep_0rtt))
-        // TODO calc stream hdr len and subtract
         enc_other_frames(ci, &pos, end, m);
 
-    if (unlikely(rtx)) {
-        // this is a RTX, pad out until beginning of stream header
+    if (enc_data || rtx) {
+        // pad out until beginning of stream header
         enc_padding_frame(ci, &pos, end, m,
                           m->strm_frm_pos - (uint16_t)(pos - v->buf));
-        pos = v->buf + m->strm_data_pos + m->strm_data_len;
-        log_stream_or_crypto_frame(
-            true, m, v->buf[m->strm_frm_pos], s->id, false,
-            m->strm_off + m->strm_data_len < s->out_data ? sdt_ooo : sdt_seq);
-
-    } else if (likely(enc_data)) {
-        // this is a fresh data/crypto or pure stream FIN packet, so pad out any
-        // remaining space before stream header
-        enc_padding_frame(ci, &pos, end, m, (uint16_t)(end - pos));
-        enc_stream_or_crypto_frame(&pos, v->buf + v->len, m, v, s);
+        if (unlikely(rtx)) {
+            pos = v->buf + m->strm_data_pos + m->strm_data_len;
+            log_stream_or_crypto_frame(
+                true, m, v->buf[m->strm_frm_pos], s->id, false,
+                m->strm_off + m->strm_data_len < s->out_data ? sdt_ooo
+                                                             : sdt_seq);
+        } else
+            enc_stream_or_crypto_frame(&pos, v->buf + v->len, m, v, s);
     }
 
-    // TODO: include more frames when c->rec.max_pkt_size < max_pkt_len TP
-    if (unlikely((pos - v->buf) < c->rec.max_pkt_size - AEAD_LEN &&
+    // TODO: include more frames when c->rec.max_ups < max_ups TP
+    if (unlikely((pos - v->buf) < c->rec.max_ups - AEAD_LEN &&
                  (enc_data || rtx) &&
                  (epoch == ep_data || (!is_clnt(c) && epoch == ep_0rtt))))
         // we can try to stick some more frames in after the stream frame
-        enc_other_frames(ci, &pos, v->buf + c->rec.max_pkt_size - AEAD_LEN, m);
+        enc_other_frames(ci, &pos, v->buf + c->rec.max_ups - AEAD_LEN, m);
 
     if (is_clnt(c) && enc_data) {
         if (unlikely(c->try_0rtt == false && m->hdr.type == LH_INIT)) {
@@ -601,26 +646,24 @@ tx:;
 
     // alloc directly from warpcore for crypto TX - no need for metadata alloc
     struct w_iov * const xv = w_alloc_iov(c->w, q_conn_af(c), 0, 0);
-    ensure(xv, "w_alloc_iov failed");
+    if (unlikely(xv == 0)) {
+        warn(WRN, "could not alloc iov");
+        return false;
+    }
 
-    if (unlikely(m->hdr.type == LH_RTRY)) {
-        memcpy(xv->buf, v->buf, v->len); // copy data
-        xv->len = v->len;
-    } else {
-        const uint16_t ret =
-            enc_aead(v, m, xv, (uint16_t)(pkt_nr_pos - v->buf));
-        if (unlikely(ret == 0)) {
-            adj_iov_to_start(v, m);
-            return false;
-        }
+    const uint16_t ret = enc_aead(v, m, xv, (uint16_t)(pkt_nr_pos - v->buf));
+    if (unlikely(ret == 0)) {
+        adj_iov_to_start(v, m);
+        return false;
     }
 
     if (!is_clnt(c))
         xv->saddr = v->saddr;
+    xv->flags = v->flags;
 
-    // track the flags manually, since warpcore sets them on the xv and it'd
-    // require another loop to copy them over
-    xv->flags = v->flags |= likely(c->sockopt.enable_ecn) ? IPTOS_ECN_ECT0 : 0;
+    // encode the pn space id and pkt nr to identify PMTUD pkts;
+    // this only works for packets numbered below 0x3fff, but that is plenty
+    xv->user_data = (uint16_t)((m->pn->type << 14) | MIN(0x3fff, m->hdr.nr));
 
 #ifndef NO_MIGRATION
     if (unlikely(c->tx_path_chlg))
@@ -649,7 +692,7 @@ tx:;
     }
 
     on_pkt_sent(m);
-    qlog_transport(pkt_tx, "DEFAULT", ped(c->w), v, m, &c->odcid);
+    qlog_transport(pkt_tx, "DEFAULT", v, m);
     bit_or(FRM_MAX, &pn->tx_frames, &m->frms);
 
     if (is_clnt(c)) {
@@ -708,11 +751,13 @@ tx:;
 bool dec_pkt_hdr_beginning(struct w_iov * const xv,
                            struct w_iov * const v,
                            struct pkt_meta * const m,
+                           struct w_iov_sq * const x,
                            const bool is_clnt,
                            uint8_t * const tok,
                            uint16_t * const tok_len,
                            uint8_t * const rit,
-                           const uint8_t dcid_len)
+                           const uint8_t dcid_len,
+                           bool * decoal)
 
 {
     const uint8_t * pos = xv->buf;
@@ -727,8 +772,8 @@ bool dec_pkt_hdr_beginning(struct w_iov * const xv,
         dec4_chk(&m->hdr.vers, &pos, end);
         dec1_chk(&m->hdr.dcid.len, &pos, end);
 
-        if (unlikely(m->hdr.vers && m->hdr.dcid.len > CID_LEN_MAX)) {
-            warn(DBG, "illegal dcid len %u", m->hdr.dcid.len);
+        if (unlikely(m->hdr.dcid.len > CID_LEN_MAX)) {
+            warn(DBG, "illegal v1 dcid len %u", m->hdr.dcid.len);
             m->hdr.dcid.len = 0;
             return false;
         }
@@ -737,8 +782,8 @@ bool dec_pkt_hdr_beginning(struct w_iov * const xv,
             decb_chk(m->hdr.dcid.id, &pos, end, m->hdr.dcid.len);
 
         dec1_chk(&m->hdr.scid.len, &pos, end);
-        if (unlikely(m->hdr.vers && m->hdr.scid.len > CID_LEN_MAX)) {
-            warn(DBG, "illegal scid len %u", m->hdr.scid.len);
+        if (unlikely(m->hdr.scid.len > CID_LEN_MAX)) {
+            warn(DBG, "illegal v1 scid len %u", m->hdr.scid.len);
             m->hdr.dcid.len = 0;
             return false;
         }
@@ -803,6 +848,26 @@ bool dec_pkt_hdr_beginning(struct w_iov * const xv,
 
 done:
     m->hdr.hdr_len = (uint16_t)(pos - xv->buf);
+
+    if (unlikely(is_lh(m->hdr.flags)) && m->hdr.type != LH_RTRY &&
+        m->hdr.vers) {
+        // check if we need to decoal
+        const uint16_t pkt_len = m->hdr.hdr_len + m->hdr.len;
+
+        // check for coalesced packet
+        *decoal = pkt_len < xv->len;
+        if (unlikely(*decoal)) {
+            // allocate new w_iov for coalesced packet and copy it over
+            struct w_iov * const dup = dup_iov(xv, 0, pkt_len);
+            // adjust length of first packet
+            xv->len = pkt_len;
+            // rx() has already removed xv from x, so just insert dup at head
+            sq_insert_head(x, dup, next);
+            warn(DBG, "split out coalesced %u-byte %s pkt", dup->len,
+                 pkt_type_str(*dup->buf, &dup->buf[1]));
+        }
+    }
+
     return true;
 }
 
@@ -948,67 +1013,65 @@ struct q_conn * is_srt(const struct w_iov * const xv
 bool dec_pkt_hdr_remainder(struct w_iov * const xv,
                            struct w_iov * const v,
                            struct pkt_meta * const m,
-                           struct q_conn * const c,
-                           struct w_iov_sq * const x,
-                           bool * const decoal)
+                           struct q_conn * const c)
 {
-    *decoal = false;
+    bool did_key_flip = false;
+    const bool prev_kyph = c->pns[pn_data].data.in_kyph;
+    uint8_t prev_secret[2][PTLS_MAX_DIGEST_SIZE];
+    const ptls_cipher_suite_t * cs = 0;
+
     const struct cipher_ctx * ctx = which_cipher_ctx_in(c, m, false);
     if (unlikely(ctx->header_protection == 0))
         return false;
 
     // we can now undo the packet protection
     if (unlikely(undo_hp(xv, m, ctx) == false))
-        return is_srt(xv, m);
+        goto check_srt;
 
     // we can now try and decrypt the packet
     struct pn_space * const pn = &c->pns[pn_data];
     struct pn_data * const pnd = &pn->data;
     if (likely(is_lh(m->hdr.flags) == false) &&
         unlikely(is_set(SH_KYPH, m->hdr.flags) != pnd->in_kyph)) {
-        if (pnd->out_kyph == pnd->in_kyph)
+        if (pnd->out_kyph == pnd->in_kyph) {
             // this is a peer-initiated key phase flip
-            flip_keys(c, false);
-        else
+            cs = ptls_get_cipher(c->tls.t);
+            if (unlikely(cs == 0)) {
+                warn(ERR, "cannot obtain cipher suite");
+                return false;
+            }
+            // save the old keying material in case we gotta rollback
+            memcpy(prev_secret[0], c->tls.secret[0], cs->hash->digest_size);
+            memcpy(prev_secret[1], c->tls.secret[1], cs->hash->digest_size);
+            // now, flip
+            flip_keys(c, false, cs);
+            did_key_flip = true;
+        } else
             // the peer switched to a key phase that we flipped
             pnd->in_kyph = pnd->out_kyph;
     }
 
     ctx = which_cipher_ctx_in(c, m, true);
     if (unlikely(ctx->aead == 0))
-        return is_srt(xv, m);
+        goto check_srt;
 
-    const uint16_t pkt_len = is_lh(m->hdr.flags) ? m->hdr.hdr_len + m->hdr.len -
-                                                       pkt_nr_len(m->hdr.flags)
-                                                 : xv->len;
+    const uint16_t pkt_len =
+        unlikely(is_lh(m->hdr.flags))
+            ? m->hdr.hdr_len + m->hdr.len - pkt_nr_len(m->hdr.flags)
+            : xv->len;
     const uint16_t ret = dec_aead(xv, v, m, pkt_len, ctx);
     if (unlikely(ret == 0))
-        return is_srt(xv, m);
+        goto check_srt;
 
     const uint8_t rsvd_bits =
         m->hdr.flags & (is_lh(m->hdr.flags) ? LH_RSVD_MASK : SH_RSVD_MASK);
     if (unlikely(rsvd_bits)) {
-        err_close(c, ERR_PROTOCOL_VIOLATION, 0,
-                  "reserved %s bits are 0x%02x (= non-zero)",
+        err_close(c, ERR_PV, 0, "reserved %s bits are 0x%02x (= non-zero)",
                   is_lh(m->hdr.flags) ? "LH" : "SH", rsvd_bits);
         return false;
     }
 
-    if (unlikely(is_lh(m->hdr.flags))) {
-        // check for coalesced packet
-        if (unlikely(pkt_len < xv->len)) {
-            *decoal = true;
-            // allocate new w_iov for coalesced packet and copy it over
-            struct w_iov * const dup = dup_iov(xv, 0, pkt_len);
-            // adjust length of first packet
-            xv->len = pkt_len;
-            // rx() has already removed xv from x, so just insert dup at head
-            sq_insert_head(x, dup, next);
-            warn(DBG, "split out coalesced %u-byte %s pkt", dup->len,
-                 pkt_type_str(*dup->buf, &dup->buf[1]));
-        }
-
-    } else {
+    if (likely(is_lh(m->hdr.flags) == false)) {
         // check if a key phase flip has been verified
         const bool v_kyph = is_set(SH_KYPH, m->hdr.flags);
         if (unlikely(v_kyph != pnd->in_kyph))
@@ -1030,8 +1093,9 @@ bool dec_pkt_hdr_remainder(struct w_iov * const xv,
     }
 
     // packet protection verified OK
-    if (diet_find(&pn_for_pkt_type(c, m->hdr.type)->recv_all, m->hdr.nr))
-        return is_srt(xv, m);
+    if (unlikely(
+            diet_find(&pn_for_pkt_type(c, m->hdr.type)->recv_all, m->hdr.nr)))
+        goto check_srt;
 
     // check if we need to send an immediate ACK
     if ((unlikely(diet_empty(&m->pn->recv_all) == false &&
@@ -1041,4 +1105,17 @@ bool dec_pkt_hdr_remainder(struct w_iov * const xv,
         m->pn->imm_ack = true;
 
     return true;
+
+check_srt:
+    if (unlikely(did_key_flip)) {
+#ifdef DEBUG_PROT
+        warn(DBG, "crypto fail, undoing key flip %u -> %u",
+             c->pns[pn_data].data.in_kyph, prev_kyph);
+#endif
+        c->pns[pn_data].data.out_kyph = c->pns[pn_data].data.in_kyph =
+            prev_kyph;
+        memcpy(c->tls.secret[0], prev_secret[0], cs->hash->digest_size);
+        memcpy(c->tls.secret[1], prev_secret[1], cs->hash->digest_size);
+    }
+    return is_srt(xv, m);
 }

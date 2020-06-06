@@ -45,6 +45,7 @@ WARP_SRC+=\
 	warpcore/config.c
 
 QUANT_SRC+=\
+	lib/src/cid.c \
 	lib/src/conn.c \
 	lib/src/diet.c \
 	lib/src/frame.c \
@@ -62,8 +63,10 @@ QUANT_SRC+=\
 
 CSRC+=$(WARP_SRC) $(PICOTLS_SRC) $(QUANT_SRC)
 
-ifndef BUILD_FLAGS
-BUILD_FLAGS=-DMINIMAL_CIPHERS -DNO_QINFO -DNO_SERVER \
+ifdef BUILD_FLAGS
+EXTRA_CFLAGS+=${BUILD_FLAGS}
+else
+EXTRA_CFLAGS+=-DMINIMAL_CIPHERS -DNO_QINFO -DNO_SERVER \
 	-DNO_ERR_REASONS -DNO_OOO_0RTT \
 	-DNO_MIGRATION -DNO_SRT_MATCHING
 endif
@@ -73,7 +76,7 @@ endif
 EXTRA_CFLAGS+=-fstack-usage -foptimize-strlen -ffast-math \
 	-Wno-error -Wno-parentheses -Wno-undef -Wno-unknown-pragmas \
 	-Wno-unused-value -Wno-address -DNDEBUG -DRELEASE_BUILD \
-	-DDLEVEL=DBG -DNO_TLS_LOG -DNO_QLOG ${BUILD_FLAGS} \
+	-DDLEVEL=DBG -DNO_TLS_LOG -DNO_QLOG \
 	-D'ntoh16(x)=__builtin_bswap16(*(uint16_t*)(x))' \
 	-D'ntoh32(x)=__builtin_bswap32(*(uint32_t*)(x))' \
 	-D'ntoh64(x)=__builtin_bswap64(*(uint64_t*)(x))'

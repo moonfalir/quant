@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.9)
 
-project(quant VERSION 0.0.27 LANGUAGES C CXX)
+project(quant VERSION 0.0.28 LANGUAGES C CXX)
 
 # See if we have google benchmark
 include(CheckCXXSymbolExists)
@@ -32,7 +32,6 @@ set(CMAKE_REQUIRED_LINK_OPTIONS -L/usr/local/lib)
 check_symbol_exists(ProfilerStart gperftools/profiler.h HAVE_PROFILER)
 cmake_reset_check_state()
 
-include_directories(AFTER SYSTEM /usr/local/include)
 link_directories(AFTER /usr/local/lib)
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
@@ -70,6 +69,7 @@ foreach(FLAG -pipe -Wextra -Wpedantic -Weverything -Werror
         -Wno-extra-semi-stmt # the kh_foreach* macros need this
         -Wno-macro-redefined # because we redefine _FORTIFY_SOURCE
         -Wno-covered-switch-default -Wno-missing-braces
+        -Wno-gnu-statement-expression
         -fcomment-block-commands=dotfile
         )
   string(REGEX REPLACE "[-=+]" "_" F ${FLAG})
@@ -195,6 +195,7 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
         set(CLANG_TIDY_CHECKS *
             -cert-err58-cpp
             -cppcoreguidelines-avoid-magic-numbers
+            -cppcoreguidelines-init-variables
             -cppcoreguidelines-macro-usage
             -cppcoreguidelines-owning-memory
             -cppcoreguidelines-pro-bounds-array-to-pointer-decay
@@ -292,7 +293,7 @@ endif()
 
 add_subdirectory(bin)
 add_subdirectory(doc)
-add_subdirectory(external)
+add_subdirectory(external EXCLUDE_FROM_ALL)
 add_subdirectory(lib)
 add_subdirectory(misc)
 
