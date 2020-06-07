@@ -167,6 +167,7 @@ struct pkt_meta {
     uint8_t acked : 1; ///< Was this packet ACKed?
     uint8_t lost : 1;  ///< Have we marked this packet as lost?
     uint8_t txed : 1;  ///< Did we TX this pkt?
+    uint8_t loss_trigger: 0; ///<How was packet detected as lost?
 
     uint8_t _unused2[5];
 };

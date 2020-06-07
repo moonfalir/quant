@@ -235,7 +235,15 @@ void qlog_recovery(const qlog_rec_evt_t evt,
     fprintf(c->qlog, ",\"recovery\",\"%s\",\"%s\",{", evt_str[evt], trg);
 
     if (evt == rec_pl) {
-        fprintf(c->qlog, "\"packet_number\":%" PRIu, m->hdr.nr);
+        if (m->loss_trigger == 3)
+            fprintf(c->qlog, "\"trigger\":\"pto_expired\"");
+        else {
+            fprintf(c->qlog, "\"packet_number\":%" PRIu, m->hdr.nr);
+            if (m->loss_trigger == 1)
+                fprintf(c->qlog, ",\"trigger\":\"time_threshold\"");
+            if (m->loss_trigger == 2)
+                fprintf(c->qlog, ",\"trigger\":\"reordering_threshold\"");   
+        }
         goto done;
     }
 

@@ -412,20 +412,33 @@ detect_lost_pkts(struct pn_space * const pn, const bool do_cc)
             continue;
 
         // Mark packet as lost, or set time when it should be marked.
-        if (m->t <= lost_send_t ||
-            pn->lg_acked >= m->hdr.nr + kPacketThreshold) {
+        if (m->t <= lost_send_t ) {
             m->lost = true;
+            m->loss_trigger = 1;
             in_flight_lost |= m->in_flight;
             incr_out_lost;
             if (unlikely(lg_lost == UINT_T_MAX) || m->hdr.nr > lg_lost) {
                 lg_lost = m->hdr.nr;
                 lg_lost_tx_t = m->t;
             }
-        } else {
-            if (unlikely(!pn->loss_t))
-                pn->loss_t = m->t + loss_del;
-            else
-                pn->loss_t = MIN(pn->loss_t, m->t + loss_del);
+        else 
+        {
+            if (pn->lg_acked >= m->hdr.nr + kPacketThreshold)
+            {
+                m->lost = true;
+                m->loss_trigger = 2;
+                in_flight_lost |= m->in_flight;
+                incr_out_lost;
+                if (unlikely(lg_lost == UINT_T_MAX) || m->hdr.nr > lg_lost) {
+                    lg_lost = m->hdr.nr;
+                    lg_lost_tx_t = m->t;
+                }
+            } else {
+                if (unlikely(!pn->loss_t))
+                    pn->loss_t = m->t + loss_del;
+                else
+                    pn->loss_t = MIN(pn->loss_t, m->t + loss_del);
+            }
         }
 
         // OnPacketsLost
@@ -513,6 +526,9 @@ static void __attribute__((nonnull)) on_ld_timeout(struct q_conn * const c)
         detect_all_lost_pkts(c, false);
     } else {
         c->tx_limit = 2;
+        struct pkt_meta m = {};
+        m.loss_trigger = 3;
+        qlog_recovery(rec_pl, "unknown", c, &m);
 #ifdef DEBUG_TIMERS
         warn(DBG, "PTO alarm #%u on %s conn %s, limit %u", c->rec.pto_cnt,
              conn_type(c), cid_str(c->scid), c->tx_limit);
