@@ -277,7 +277,7 @@ void on_pkt_lost(struct pkt_meta * const m, const bool is_lost)
     if (unlikely(c->pmtud_pkt != UINT16_MAX &&
                  m->hdr.nr == (c->pmtud_pkt & 0x3fff) &&
                  m->hdr.type == (c->pmtud_pkt >> 14))) {
-        c->rec.max_ups = default_max_ups(c->sock->ws_af);
+        c->rec.max_ups = default_max_pkt_len(c->sock->ws_af);
         warn(NTE, RED "PMTU %u not validated, using %u" NRM,
              MIN(w_max_udp_payload(c->sock), (uint16_t)c->tp_peer.max_ups),
              c->rec.max_ups);
@@ -526,7 +526,7 @@ static void __attribute__((nonnull)) on_ld_timeout(struct q_conn * const c)
         detect_all_lost_pkts(c, false);
     } else {
         c->tx_limit = 2;
-        struct pkt_meta m = {};
+        struct pkt_meta m = {{0}};
         m.loss_trigger = 3;
         qlog_recovery(rec_pl, "unknown", c, &m);
 #ifdef DEBUG_TIMERS
