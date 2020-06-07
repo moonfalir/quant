@@ -421,6 +421,7 @@ detect_lost_pkts(struct pn_space * const pn, const bool do_cc)
                 lg_lost = m->hdr.nr;
                 lg_lost_tx_t = m->t;
             }
+        }
         else 
         {
             if (pn->lg_acked >= m->hdr.nr + kPacketThreshold)
