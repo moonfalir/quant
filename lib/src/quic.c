@@ -92,7 +92,7 @@ void alloc_off(struct w_engine * const w,
                const uint32_t len,
                const uint16_t off)
 {
-    uint16_t pkt_len = default_max_ups(af);
+    uint16_t pkt_len = default_max_pkt_len(af);
     if (c && c->rec.max_ups_af) {
         pkt_len = c->rec.max_ups;
         if (af != c->rec.max_ups_af) {
