@@ -272,12 +272,10 @@ void qlog_recovery(const qlog_rec_evt_t evt,
         // prev_metric =
         fprintf(c->qlog, "%s\"latest_rtt\":%" PRIu, prev_metric ? "," : "",
                 c->rec.cur.latest_rtt);
-#if 0
     if (c->rec.cur.rttvar != c->rec.prev.rttvar)
         // prev_metric =
         fprintf(c->qlog, "%s\"rtt_variance\":%" PRIu, prev_metric ? "," : "",
                 c->rec.cur.rttvar);
-#endif
 
 done:
     fputs("}]", c->qlog);
