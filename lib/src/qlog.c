@@ -219,6 +219,26 @@ done:
     fputs("}]", c->qlog);
 }
 
+void qlog_timers(const qlog_tim_evt_t evt,
+                 const char * const trg,
+                 struct q_conn * const c,
+                 const uint64_t timer)
+{
+    if (c->qlog == 0)
+        return;
+
+    qlog_common(c);
+
+    static const char * const evt_str[] = {
+        [tim_ack] = "rack_timer", [tim_prb] = "probe_timer"};
+    fprintf(c->qlog, ",\"recovery\",\"%s\",\"%s\",{", evt_str[evt], trg);
+
+    fprintf(c->qlog, "\"timer\":%" PRIu64, timer);
+
+done:
+    fputs("}]", c->qlog);
+}
+
 
 void qlog_recovery(const qlog_rec_evt_t evt,
                    const char * const trg,

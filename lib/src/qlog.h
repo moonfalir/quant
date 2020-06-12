@@ -60,6 +60,14 @@ qlog_recovery(const qlog_rec_evt_t evt,
               struct q_conn * const c,
               const struct pkt_meta * const m);
 
+typedef enum { tim_ack, tim_prb } qlog_tim_evt_t;
+
+extern void __attribute__((nonnull(3)))
+qlog_timers(const qlog_tim_evt_t evt,
+            const char * const trg,
+            struct q_conn * const c,
+            const uint64_t timer);
+
 #else
 
 #define qlog_close(...)                                                        \
