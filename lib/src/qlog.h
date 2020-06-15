@@ -66,7 +66,7 @@ extern void __attribute__((nonnull(3)))
 qlog_timers(const qlog_tim_evt_t evt,
             const char * const trg,
             struct q_conn * const c,
-            const uint64_t timer);
+            const double timer);
 
 #else
 
