@@ -191,7 +191,7 @@ void set_ld_timer(struct q_conn * const c)
                    NS_PER_US +
                c->tp_peer.max_ack_del * NS_PER_MS);
     to *= 1 << c->rec.pto_cnt;
-    qlog_timers(tim_prb, "unknown", c, to);
+    qlog_timers(tim_prb, "unknown", c, (double) (to / NS_PER_US));
     const uint64_t last_ae_tx_t = earliest_pn(c, false)->last_ae_tx_t;
     c->rec.ld_alarm_val = (last_ae_tx_t ? last_ae_tx_t : now) + to;
     // XXX do an RTX at least every 8 seconds (spec violation)
@@ -390,7 +390,7 @@ detect_lost_pkts(struct pn_space * const pn, const bool do_cc)
     const uint64_t loss_del =
         MAX(kGranularity,
             NS_PER_US * 9 * MAX(c->rec.cur.latest_rtt, c->rec.cur.srtt) / 8);
-    qlog_timers(tim_ack, "unknown", c, loss_del);
+    qlog_timers(tim_ack, "unknown", c, (double) (loss_del / NS_PER_US));
     // Packets sent before this time are deemed lost.
     const uint64_t lost_send_t = w_now() - loss_del;
 

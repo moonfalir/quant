@@ -222,7 +222,7 @@ done:
 void qlog_timers(const qlog_tim_evt_t evt,
                  const char * const trg,
                  struct q_conn * const c,
-                 const uint64_t timer)
+                 const double timer)
 {
     if (c->qlog == 0)
         return;
@@ -233,7 +233,7 @@ void qlog_timers(const qlog_tim_evt_t evt,
         [tim_ack] = "rack_timer", [tim_prb] = "probe_timer"};
     fprintf(c->qlog, ",\"recovery\",\"%s\",\"%s\",{", evt_str[evt], trg);
 
-    fprintf(c->qlog, "\"timer\":%" PRIu64, timer);
+    fprintf(c->qlog, "\"timer\":%f", timer);
 
 done:
     fputs("}]", c->qlog);
@@ -262,7 +262,7 @@ void qlog_recovery(const qlog_rec_evt_t evt,
             if (m->loss_trigger == 1)
                 fprintf(c->qlog, ",\"trigger\":\"time_threshold\"");
             if (m->loss_trigger == 2)
-                fprintf(c->qlog, ",\"trigger\":\"reordering_threshold\"");   
+                fprintf(c->qlog, ",\"trigger\":\"packet_threshold\"");   
         }
         goto done;
     }
