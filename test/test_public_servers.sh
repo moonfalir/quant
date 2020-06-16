@@ -36,10 +36,11 @@ declare -A servers=(
     [ats]="quic.ogre.com||4433|4434|4433|/en/latest/_static/jquery.js"
     [f5]="f5quic.com|-3|4433|4433|4433|/50000"
     [google]="quic.rocks|-3|4433|4434|4433|/40000"
-    [haskell]="mew.org||4434|4434|4434|/40000"
+    [haskell]="mew.org|-3|4433|4434|4433|/num/40000"
     [lsquic]="http3-test.litespeedtech.com|-3|4433|4434|4433|/40000"
     [msquic]="quic.westus.cloudapp.azure.com||4433|4434|443|/draft-ietf-quic-http-11.txt"
     [mvfst]="fb.mvfst.net|-3|443|4434|443|/40000"
+    [nginx]="quic.nginx.org|-3|443|443|443|/static/fonts/RobotoRegular.woff"
     [ngtcp2]="nghttp2.org|-3|4433|4434|4433|/40000"
     [ngx_quic]="cloudflare-quic.com|-3|443|443|443|/index.html"
     [pandora]="pandora.cm.in.tum.de||4433|4434|4433|/index.html"
@@ -115,7 +116,9 @@ function prep {
 
     local ret_base="$1.ret"
     >&2 echo -n "($ret in $log) "
-    echo $ret > "$ret_base.fail"
+    if [ ! -e "$ret_base.fail" ] || [ "$(cat "$ret_base.fail")" = "x" ]; then
+        echo $ret > "$ret_base.fail"
+    fi
     rm -f "$log_strip"
 }
 
@@ -308,7 +311,7 @@ function analyze {
 
         [ ! -e "$base.ret.fail" ] && [ -s "$base.ret.hshk" ] && \
             [ -s "$base.ret.data" ] && [ -s "$base.ret.clse" ] && rm -f "$log"
-        rm -f "$log.strip"
+        # rm -f "$log.strip"
     fi
 
     # analyze rsmt and 0rtt

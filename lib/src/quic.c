@@ -612,7 +612,8 @@ struct w_engine * q_init(const char * const ifname,
         ped(w)->conf.server_cid_len = 4; // could be another value
 
     ped(w)->default_conn_conf =
-        (struct q_conn_conf){.idle_timeout = 10,
+        (struct q_conn_conf){.initial_rtt = 500,
+                             .idle_timeout = 10,
                              .enable_udp_zero_checksums = true,
                              .tls_key_update_frequency = 3,
                              .version = ok_vers[0],
@@ -629,6 +630,8 @@ struct w_engine * q_init(const char * const ifname,
         // update default connection configuration
         ped(w)->default_conn_conf.version =
             get_conf(w, conf->conn_conf, version);
+        ped(w)->default_conn_conf.initial_rtt =
+            get_conf(w, conf->conn_conf, initial_rtt);
         ped(w)->default_conn_conf.idle_timeout =
             get_conf_uncond(w, conf->conn_conf, idle_timeout);
         ped(w)->default_conn_conf.tls_key_update_frequency =
@@ -1005,7 +1008,7 @@ bool q_ready(struct w_engine * const w,
         if (c->needs_accept)
             remove = c->have_new_data == false;
 #endif
-#ifdef DEBUG_EXTRA
+#if defined(DEBUG_EXTRA) && !defined(NO_SERVER)
         warn(WRN, "%s conn %s ready to %s", conn_type(c), cid_str(c->scid),
              c->needs_accept ? "accept"
                              : (c->state == conn_clsd ? "close" : "rx"));

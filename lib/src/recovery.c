@@ -186,7 +186,7 @@ void set_ld_timer(struct q_conn * const c)
 
     timeout_t to =
         unlikely(c->rec.cur.srtt == 0)
-            ? (2 * kInitialRtt)
+            ? (2 * c->rec.initial_rtt) * NS_PER_US
             : ((c->rec.cur.srtt + MAX(4 * c->rec.cur.rttvar, kGranularity)) *
                    NS_PER_US +
                c->tp_peer.max_ack_del * NS_PER_MS);
@@ -303,7 +303,7 @@ void on_pkt_lost(struct pkt_meta * const m, const bool is_lost)
         for (uint8_t i = 0; i < FRM_MAX; i++)
             if (has_frm(m->frms, i) && bit_isset(FRM_MAX, i, &all_ctrl)) {
 #ifdef DEBUG_EXTRA
-                warn(DBG, "%s pkt %" PRIu " ctrl frame: 0x%02x",
+                warn(DBG, "%s pkt %" PRIu " lost ctrl frame: 0x%02x",
                      pkt_type_str(m->hdr.flags, &m->hdr.vers), m->hdr.nr, i);
 #endif
                 switch (i) {
@@ -315,7 +315,7 @@ void on_pkt_lost(struct pkt_meta * const m, const bool is_lost)
                     // DATA_BLOCKED and STREAM_DATA_BLOCKED RTX'ed automatically
                     break;
                 case FRM_HSD:
-                    c->tx_hshk_done = true;
+                    c->needs_tx = c->tx_hshk_done = true;
                     break;
                 case FRM_TOK:
                     c->tx_new_tok = true;
@@ -351,11 +351,9 @@ void on_pkt_lost(struct pkt_meta * const m, const bool is_lost)
     m->lost = true;
     if (m->strm && !m->has_rtx) {
         m->strm->lost_cnt++;
-#ifndef NDEBUG
-        ensure(m->strm->lost_cnt <= w_iov_sq_cnt(&m->strm->out),
+        assure(m->strm->lost_cnt <= w_iov_sq_cnt(&m->strm->out),
                "strm " FMT_SID " cnt %" PRIu " < lost %" PRIu, m->strm->id,
                w_iov_sq_cnt(&m->strm->out), m->strm->lost_cnt);
-#endif
     }
 }
 
@@ -721,12 +719,12 @@ void on_pkt_acked(struct w_iov * const v, struct pkt_meta * m)
         // this ACKs a pkt with prior or later RTXs
         if (m->has_rtx) {
             // this ACKs a pkt that was since (again) RTX'ed
+#ifdef DEBUG_EXTRA
             warn(DBG, "%s %s pkt " FMT_PNR_OUT " was RTX'ed as " FMT_PNR_OUT,
                  conn_type(c), pkt_type_str(m->hdr.flags, &m->hdr.vers),
                  m->hdr.nr, m_rtx->hdr.nr);
-#ifndef NDEBUG
-            ensure(sl_next(m_rtx, rtx_next) == 0, "RTX chain corrupt");
 #endif
+            assure(sl_next(m_rtx, rtx_next) == 0, "RTX chain corrupt");
             if (m_rtx->acked == false) {
                 // treat RTX'ed data as ACK'ed; use stand-in w_iov for RTX info
                 const uint_t acked_nr = m->hdr.nr;
@@ -740,12 +738,14 @@ void on_pkt_acked(struct w_iov * const v, struct pkt_meta * m)
                 m = m_rtx;
                 // XXX caller will not be aware that we mucked around with m!
             }
+#ifdef DEBUG_EXTRA
         } else {
             // this ACKs the last ("real") RTX of a packet
-            warn(CRT, "pkt nr=%" PRIu " was earlier TX'ed as %" PRIu,
+            warn(DBG, "pkt nr=%" PRIu " was earlier TX'ed as %" PRIu,
                  has_pkt_nr(m->hdr.flags, m->hdr.vers) ? m->hdr.nr : 0,
                  has_pkt_nr(m_rtx->hdr.flags, m_rtx->hdr.vers) ? m_rtx->hdr.nr
                                                                : 0);
+#endif
         }
     }
 

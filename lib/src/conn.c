@@ -42,10 +42,6 @@
 #include <netinet/in.h>
 #endif
 
-#if !defined(PARTICLE) && !defined(RIOT_VERSION)
-#include <netinet/ip.h>
-#endif
-
 #include <picotls.h>
 #include <quant/quant.h>
 #include <timeout.h>
@@ -116,32 +112,54 @@ static bool __attribute__((const)) vers_supported(const uint32_t v)
 }
 
 
-static uint32_t __attribute__((nonnull))
-clnt_vneg(const uint8_t * const pos, const uint8_t * const end)
+static uint32_t __attribute__((nonnull)) clnt_vneg(struct q_conn * const c,
+                                                   const uint8_t * const pos,
+                                                   const uint8_t * const end)
 {
+    unpoison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
+    int off = 0;
+    uint8_t prio = UINT8_MAX;
+    uint32_t vers = 0;
     for (uint8_t i = 0; i < ok_vers_len; i++) {
         if (is_vneg_vers(ok_vers[i]))
             continue;
 
         const uint8_t * p = pos;
         while (p + sizeof(ok_vers[0]) <= end) {
-            uint32_t vers = 0;
             dec4(&vers, &p, end);
+
+            if (prio == UINT8_MAX || prio == i) {
+                if (off + 17 < (int)ped(c->w)->scratch_len)
+                    // 17 = strlen(", 0x12345678") + strlen(", ...")
+                    off += snprintf((char *)&ped(c->w)->scratch[off],
+                                    ped(c->w)->scratch_len - (size_t)off,
+                                    "%s0x%0" PRIx32,
+                                    prio == UINT8_MAX ? "" : ", ", vers);
+                else if (ped(c->w)->scratch[off - 1] != '.') {
+                    strncat((char *)&ped(c->w)->scratch[off], ", ...",
+                            ped(c->w)->scratch_len - (size_t)off);
+                    off += 5; // 5 = strlen(", ...")
+                }
+                if (prio == UINT8_MAX)
+                    prio = i;
+            }
+
             if (is_vneg_vers(vers))
                 continue;
-#ifdef DEBUG_EXTRA
-            warn(DBG,
-                 "serv prio %ld = 0x%0" PRIx32 "; our prio %u = 0x%0" PRIx32,
-                 (unsigned long)(p - pos) / sizeof(vers), vers, i, ok_vers[i]);
-#endif
             if (ok_vers[i] == vers)
-                return vers;
+                goto done;
         }
     }
 
     // we're out of matching candidates
-    warn(INF, "no vers in common with serv");
-    return 0;
+    warn(INF, "no vers in common with serv; offered %s", ped(c->w)->scratch);
+    vers = 0;
+done:
+    if (vers)
+        warn(INF, "vers 0x%0" PRIx32 " in common with serv; offered %s", vers,
+             ped(c->w)->scratch);
+    poison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
+    return vers;
 }
 
 
@@ -412,7 +430,9 @@ static void __attribute__((nonnull)) tx_rtry(struct q_conn * const c)
     mx->txed = 1;
     mx->udp_len = xv->len = (uint16_t)(pos - xv->buf);
     xv->saddr = c->peer;
-    xv->flags = likely(c->sockopt.enable_ecn) ? IPTOS_ECN_ECT0 : 0;
+#ifndef NO_ECN
+    xv->flags = likely(c->sockopt.enable_ecn) ? ECN_ECT0 : ECN_NOT;
+#endif
     log_pkt("TX", xv, &xv->saddr, c->tok, c->tok_len, rit);
     // qlog_transport(pkt_tx, "default", xv, mx);
     do_w_tx(c->sock, &q);
@@ -1013,7 +1033,7 @@ static bool __attribute__((nonnull)) rx_pkt(const struct w_sock * const ws
                     // the application didn't request a special version, do vneg
 
                     const uint32_t try_vers =
-                        clnt_vneg(v->buf + m->hdr.hdr_len, v->buf + v->len);
+                        clnt_vneg(c, v->buf + m->hdr.hdr_len, v->buf + v->len);
                     if (try_vers == 0) {
                         // no version in common with serv
                         enter_closing(c);
@@ -1119,25 +1139,18 @@ done:
     if (unlikely(ok == false))
         return false;
 
+#ifndef NO_ECN
     if (likely(m->hdr.nr != UINT_T_MAX)) {
         struct pn_space * const pn = pn_for_pkt_type(c, m->hdr.type);
         // update ECN info
-        switch (v->flags & IPTOS_ECN_MASK) {
-        case IPTOS_ECN_ECT1:
-            pn->ect1_cnt++;
-            break;
-        case IPTOS_ECN_ECT0:
-            pn->ect0_cnt++;
-            break;
-        case IPTOS_ECN_CE:
-            pn->ce_cnt++;
-            break;
-        }
+        pn->ecn_rxed[v->flags & ECN_MASK]++;
         pn->pkts_rxed_since_last_ack_tx++;
 
+        // TODO: if we do this, it needs to move outside of #ifndef NO_ECN
         // if (pn == &c->pns[pn_data] && pn->pkts_rxed_since_last_ack_tx >= 16)
         //     tx_ack(c, ep_data, false);
     }
+#endif
 
 #ifndef NO_QLOG
     // if pkt has STREAM or CRYPTO frame but no strm pointer, it's a dup
@@ -1716,7 +1729,8 @@ void enter_closing(struct q_conn * const c)
 
     // start closing/draining alarm (3 * RTO)
     const timeout_t dur =
-        3 * (c->rec.cur.srtt == 0 ? kInitialRtt : c->rec.cur.srtt * NS_PER_US) +
+        3 * (c->rec.cur.srtt == 0 ? c->rec.initial_rtt : c->rec.cur.srtt) *
+            NS_PER_US +
         4 * c->rec.cur.rttvar * NS_PER_US;
     timeouts_add(ped(c->w)->wheel, &c->closing_alarm, dur);
 #ifdef DEBUG_TIMERS
@@ -1755,6 +1769,7 @@ static void __attribute__((nonnull)) ack_alarm(struct q_conn * const c)
 
 void update_conf(struct q_conn * const c, const struct q_conn_conf * const conf)
 {
+    c->rec.initial_rtt = get_conf(c->w, conf, initial_rtt) * US_PER_MS;
     c->spin_enabled = get_conf_uncond(c->w, conf, enable_spinbit);
     c->do_qr_test = get_conf_uncond(c->w, conf, enable_quantum_readiness_test);
 
@@ -1838,7 +1853,9 @@ struct q_conn * new_conn(struct w_engine * const w,
         }
     }
 
+#ifndef NO_ECN
     c->sockopt.enable_ecn = true;
+#endif
     c->sockopt.enable_udp_zero_checksums =
         get_conf_uncond(c->w, conf, enable_udp_zero_checksums);
 
@@ -1943,6 +1960,7 @@ struct q_conn * new_conn(struct w_engine * const w,
                 else
                     memcpy(&c->tp_mine.pref_addr.addr6, &ws->ws_loc,
                            sizeof(c->tp_mine.pref_addr.addr6));
+                break;
             }
         }
 

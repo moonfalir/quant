@@ -300,9 +300,9 @@ static int setup_initial_encryption(struct st_quicly_cipher_context_t * ingress,
                                     ptls_iovec_t cid,
                                     int is_client)
 {
-    static const uint8_t salt[] = {0xc3, 0xee, 0xf7, 0x12, 0xc7, 0x2e, 0xbb,
-                                   0x5a, 0x11, 0xa7, 0xd2, 0x43, 0x2b, 0xb4,
-                                   0x63, 0x65, 0xbe, 0xf9, 0xf5, 0x02};
+    static const uint8_t salt[] = {0xaf, 0xbf, 0xec, 0x28, 0x99, 0x93, 0xd2,
+                                   0x4c, 0x9e, 0x97, 0x86, 0xf1, 0x9c, 0x61,
+                                   0x11, 0xe0, 0x43, 0x90, 0xa8, 0x99};
     static const char * labels[2] = {"client in", "server in"};
     ptls_cipher_suite_t * const cs = &aes128gcmsha256;
     uint8_t secret[PTLS_MAX_DIGEST_SIZE];
@@ -1357,11 +1357,9 @@ void free_tls(struct q_conn * const c, const bool keep_alpn)
 
 void init_prot(struct q_conn * const c)
 {
-    struct cid * const scid = c->scid;
-    struct cid * const dcid = c->dcid;
     const ptls_iovec_t cid = {
-        .base = (uint8_t *)(is_clnt(c) ? &dcid->id : &scid->id),
-        .len = is_clnt(c) ? dcid->len : scid->len};
+        .base = (uint8_t *)(is_clnt(c) ? &c->dcid->id : &c->scid->id),
+        .len = is_clnt(c) ? c->dcid->len : c->scid->len};
     struct pn_space * const pn = &c->pns[pn_init];
     setup_initial_encryption(&pn->early.in, &pn->early.out, cid, is_clnt(c));
 }
@@ -1756,9 +1754,10 @@ void init_tls_ctx(const struct q_conf * const conf,
 #endif
 
     static const uint8_t retry_secret[] = {
-        0x65, 0x6e, 0x61, 0xe3, 0x36, 0xae, 0x94, 0x17, 0xf7, 0xf0, 0xed,
-        0xd8, 0xd7, 0x8d, 0x46, 0x1e, 0x2a, 0xa7, 0x08, 0x4a, 0xba, 0x7a,
-        0x14, 0xc1, 0xe9, 0xf7, 0x26, 0xd5, 0x57, 0x09, 0x16, 0x9a};
+        0x8b, 0x0d, 0x37, 0xeb, 0x85, 0x35, 0x02, 0x2e, 0xbc, 0x8d, 0x76,
+        0xa2, 0x07, 0xd8, 0x0d, 0xf2, 0x26, 0x46, 0xec, 0x06, 0xdc, 0x80,
+        0x96, 0x42, 0xc3, 0x0a, 0x8b, 0xaa, 0x2b, 0xaa, 0xff, 0x4c};
+
     const ptls_cipher_suite_t * const cs = &aes128gcmsha256;
     ped->rid_ctx =
         ptls_aead_new(cs->aead, cs->hash, 1, retry_secret, AEAD_BASE_LABEL);

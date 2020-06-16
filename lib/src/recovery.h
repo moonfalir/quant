@@ -56,6 +56,8 @@ struct cc_state {
 
 
 struct recovery {
+    uint_t initial_rtt; // kInitialRtt config knob, in usec
+
     struct timeout ld_alarm; // loss_detection_timer
     timeout_t ld_alarm_val;
 
