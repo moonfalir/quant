@@ -589,10 +589,10 @@ static bool __attribute__((nonnull)) dec_ack_frame(const uint8_t type,
         if (ack_rng == 0) {
             if (n == ack_rng_cnt + 1)
                 warn(INF,
-                     FRAM_IN "ACK" NRM " 0x%02x=%s lg=" FMT_PNR_OUT
+                     FRAM_IN "ACK" NRM " 0x%02x%s lg=" FMT_PNR_OUT
                              " delay=%" PRIu64 " (%" PRIu " usec) cnt=%" PRIu
                              " rng=%" PRIu " [" FMT_PNR_OUT "]",
-                     type, type == FRM_ACE ? "ECN" : "", lg_ack_in_frm,
+                     type, type == FRM_ACE ? "=ECN" : "", lg_ack_in_frm,
                      ack_delay_raw, ack_delay, ack_rng_cnt, ack_rng,
                      lg_ack_in_frm);
             else
@@ -603,11 +603,11 @@ static bool __attribute__((nonnull)) dec_ack_frame(const uint8_t type,
         } else {
             if (n == ack_rng_cnt + 1)
                 warn(INF,
-                     FRAM_IN "ACK" NRM " 0x%02x=%s lg=" FMT_PNR_OUT
+                     FRAM_IN "ACK" NRM " 0x%02x%s lg=" FMT_PNR_OUT
                              " delay=%" PRIu64 " (%" PRIu " usec) cnt=%" PRIu
                              " rng=%" PRIu " [" FMT_PNR_OUT ".." FMT_PNR_OUT
                              "]",
-                     type, type == FRM_ACE ? "ECN" : "", lg_ack_in_frm,
+                     type, type == FRM_ACE ? "=ECN" : "", lg_ack_in_frm,
                      ack_delay_raw, ack_delay, ack_rng_cnt, ack_rng,
                      lg_ack - ack_rng, shorten_ack_nr(lg_ack, ack_rng));
             else
@@ -776,18 +776,12 @@ dec_close_frame(const uint8_t type,
     if (act_reas_len)
         decb_chk(ped(c->w)->scratch, pos, end, act_reas_len, c, type);
 
-    if (type == FRM_CLQ)
-        warn(INF,
-             FRAM_IN "CONNECTION_CLOSE" NRM " 0x%02x=quic err=%s0x%" PRIx NRM
-                     " frame=0x%" PRIx " rlen=%" PRIu " reason=%s%.*s" NRM,
-             type, err_code ? RED : NRM, err_code, frame_type, reas_len,
-             err_code ? RED : NRM, (int)reas_len, ped(c->w)->scratch);
-    else
-        warn(INF,
-             FRAM_IN "CONNECTION_CLOSE" NRM " 0x%02x=app err=%s0x%" PRIx NRM
-                     " rlen=%" PRIu " reason=%s%.*s" NRM,
-             type, err_code ? RED : NRM, err_code, reas_len,
-             err_code ? RED : NRM, (int)reas_len, ped(c->w)->scratch);
+    warn(INF,
+         FRAM_IN "CONNECTION_CLOSE" NRM " 0x%02x=%s err=%s0x%" PRIx NRM
+                 " frame=0x%" PRIx " rlen=%" PRIu "%s%s%.*s" NRM,
+         type, type == FRM_CLQ ? "quic" : "app", err_code ? RED : NRM, err_code,
+         frame_type, reas_len, err_code ? RED : NRM, reas_len ? " reason=" : "",
+         (int)reas_len, ped(c->w)->scratch);
     poison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
 
     if (unlikely(reas_len != act_reas_len))
@@ -1154,7 +1148,8 @@ dec_reset_stream_frame(const uint8_t ** pos,
     if (unlikely(s == 0))
         return true;
 
-    chk_finl_size(off, s, FRM_RST);
+    // FIXME: not sure is this is even needed here:
+    // chk_finl_size(off, s, FRM_RST);
     strm_to_state(s, strm_clsd);
 
     return true;
@@ -1171,11 +1166,6 @@ dec_retire_cid_frame(const uint8_t ** pos,
     decv_chk(&seq, pos, end, c, FRM_RTR);
 
     warn(ERR /*INF*/, FRAM_IN "RETIRE_CONNECTION_ID" NRM " seq=%" PRIu, seq);
-#ifndef NO_MIGRATION
-    struct cid * id;
-    sl_foreach (id, &c->scids.act, next)
-        warn(ERR, "%s", cid_str(id));
-#endif
 
 #ifndef NO_MIGRATION
     struct cid * const scid = cid_by_seq(&c->scids.act, seq);
@@ -1598,10 +1588,10 @@ bool enc_ack_frame(struct q_conn_info * const ci,
                      gap, ack_rng, b->lo, shorten_ack_nr(b->hi, ack_rng));
             else
                 warn(INF,
-                     FRAM_OUT "ACK" NRM " 0x%02x=%s lg=" FMT_PNR_IN
+                     FRAM_OUT "ACK" NRM " 0x%02x%s lg=" FMT_PNR_IN
                               " delay=%" PRIu " (%" PRIu " usec) cnt=%" PRIu
                               " rng=%" PRIu " [" FMT_PNR_IN ".." FMT_PNR_IN "]",
-                     type, type == FRM_ACE ? "ECN" : "", first_rng->hi,
+                     type, type == FRM_ACE ? "=ECN" : "", first_rng->hi,
                      (uint_t)ack_delay, (uint_t)ack_delay << ade, ack_rng_cnt,
                      ack_rng, b->lo, shorten_ack_nr(b->hi, ack_rng));
 
@@ -1613,10 +1603,10 @@ bool enc_ack_frame(struct q_conn_info * const ci,
                      gap, ack_rng, b->hi);
             else
                 warn(INF,
-                     FRAM_OUT "ACK" NRM " 0x%02x=%s lg=" FMT_PNR_IN
+                     FRAM_OUT "ACK" NRM " 0x%02x%s lg=" FMT_PNR_IN
                               " delay=%" PRIu " (%" PRIu " usec) cnt=%" PRIu
                               " rng=%" PRIu " [" FMT_PNR_IN "]",
-                     type, type == FRM_ACE ? "ECN" : "", first_rng->hi,
+                     type, type == FRM_ACE ? "=ECN" : "", first_rng->hi,
                      (uint_t)ack_delay, (uint_t)ack_delay << ade, ack_rng_cnt,
                      ack_rng, first_rng->hi);
         }
@@ -1739,32 +1729,23 @@ void enc_close_frame(struct q_conn_info * const ci,
         enc1(pos, end, c->err_frm);
 
 #ifndef NO_ERR_REASONS
-    const uint8_t err_reason_len = c->err_reason_len;
-    const char * const err_reason = c->err_reason;
+    const uint8_t reas_len = c->err_reason_len;
+    const char * const reas = c->err_reason;
 #else
-    const uint8_t err_reason_len = 0;
-    const char err_reason[] = "";
+    const uint8_t reas_len = 0;
+    const char reas[] = "";
 #endif
 
-    encv(pos, end, err_reason_len);
-    if (err_reason_len)
-        encb(pos, end, (const uint8_t *)err_reason, err_reason_len);
+    encv(pos, end, reas_len);
+    if (reas_len)
+        encb(pos, end, (const uint8_t *)reas, reas_len);
 
-#ifndef NDEBUG
-    if (type == FRM_CLQ)
-        warn(INF,
-             FRAM_OUT "CONNECTION_CLOSE" NRM " 0x%02x=quic err=%s0x%" PRIx NRM
-                      " frame=0x%02x rlen=%u reason=%s%.*s" NRM,
-             type, c->err_code ? RED : NRM, c->err_code, c->err_frm,
-             err_reason_len, c->err_code ? RED : NRM, (int)err_reason_len,
-             err_reason);
-    else
-        warn(INF,
-             FRAM_OUT "CONNECTION_CLOSE" NRM " 0x%02x=app err=%s0x%" PRIx NRM
-                      " rlen=%u reason=%s%.*s" NRM,
-             type, c->err_code ? RED : NRM, c->err_code, err_reason_len,
-             c->err_code ? RED : NRM, (int)err_reason_len, err_reason);
-#endif
+    warn(INF,
+         FRAM_OUT "CONNECTION_CLOSE" NRM " 0x%02x=%s err=%s0x%" PRIx NRM
+                  " frame=0x%02x rlen=%u%s%s%.*s" NRM,
+         type, type == FRM_CLQ ? "quic" : "app", c->err_code ? RED : NRM,
+         c->err_code, c->err_frm, reas_len, c->err_code ? RED : NRM,
+         reas_len ? " reason=" : "", (int)reas_len, reas);
 
     track_frame(m, ci, type, 1);
 }

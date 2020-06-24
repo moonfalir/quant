@@ -63,6 +63,7 @@ struct q_stream; // IWYU pragma: no_forward_declare q_stream
 #define SH_RSVD_MASK 0x18 ///< short header: reserved bits mask (= 0)
 #define SH_KYPH 0x04      ///< short header: key phase bit
 
+#define MAX_PKT_NR_LEN 4 ///< Maximum packet number length allowed by spec.
 
 #define ERR_NONE 0x0
 #define ERR_INTL 0x1
@@ -162,11 +163,12 @@ has_pkt_nr(const uint8_t flags, const uint32_t vers)
 }
 
 
-extern bool __attribute__((nonnull)) xor_hp(struct w_iov * const xv,
-                                            const struct pkt_meta * const m,
-                                            const struct cipher_ctx * const ctx,
-                                            const uint16_t pkt_nr_pos,
-                                            const bool is_enc);
+extern bool __attribute__((nonnull(1, 2)))
+xor_hp(struct w_iov * const xv,
+       const struct pkt_meta * const m,
+       const struct cipher_ctx * const ctx,
+       const uint16_t pkt_nr_pos,
+       const uint8_t * const enc_mask);
 
 extern bool __attribute__((nonnull))
 dec_pkt_hdr_beginning(struct w_iov * const xv,

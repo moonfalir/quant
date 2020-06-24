@@ -1853,15 +1853,18 @@ uint16_t enc_aead(const struct w_iov * const v,
     const uint16_t hdr_len = m->hdr.hdr_len;
     memcpy(xv->buf, v->buf, hdr_len); // copy pkt header
 
+    ptls_aead_supplementary_encryption_t supp = {
+        .ctx = which_cipher_ctx_out(m, false)->header_protection,
+        .input = &xv->buf[pkt_nr_pos + MAX_PKT_NR_LEN]};
+
     const uint16_t plen = v->len - hdr_len + AEAD_LEN;
-    xv->len = hdr_len + (uint16_t)ptls_aead_encrypt(
-                            ctx->aead, &xv->buf[hdr_len], &v->buf[hdr_len],
-                            plen - AEAD_LEN, m->hdr.nr, v->buf, hdr_len);
+    ptls_aead_encrypt_s(ctx->aead, &xv->buf[hdr_len], &v->buf[hdr_len],
+                        plen - AEAD_LEN, m->hdr.nr, v->buf, hdr_len, &supp);
+    xv->len = v->len + AEAD_LEN;
 
     // apply packet protection
-    ctx = which_cipher_ctx_out(m, false);
     if (likely(pkt_nr_pos) &&
-        unlikely(xor_hp(xv, m, ctx, pkt_nr_pos, true) == false))
+        unlikely(xor_hp(xv, m, 0, pkt_nr_pos, supp.output) == false))
         return 0;
 
 #ifdef DEBUG_PROT

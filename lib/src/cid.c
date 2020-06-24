@@ -104,7 +104,7 @@ void retire_prior_to(struct cids * const ids, const uint_t seq)
     struct cid * i;
     struct cid * tmp;
     sl_foreach_safe (i, &ids->act, next, tmp)
-        if (seq < i->seq)
+        if (i->seq < seq)
             cid_retire(ids, i);
 }
 

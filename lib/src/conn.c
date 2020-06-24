@@ -246,17 +246,12 @@ static void __attribute__((nonnull)) log_sent_pkts(struct q_conn * const c)
         if (pn->abandoned)
             continue;
 
-        struct diet unacked = diet_initializer(unacked);
-        struct pkt_meta * m;
-        kh_foreach_value(&pn->sent_pkts, m,
-                         diet_insert(&unacked, m->hdr.nr, 0));
-
         int pos = 0;
         unpoison_scratch(ped(c->w)->scratch, ped(c->w)->scratch_len);
         const uint32_t tmp_len = ped(c->w)->scratch_len;
         uint8_t * const tmp = ped(c->w)->scratch;
         struct ival * i = 0;
-        diet_foreach (i, diet, &unacked) {
+        diet_foreach (i, diet, &pn->sent_pkt_nrs) {
             if ((size_t)pos >= tmp_len) {
                 tmp[tmp_len - 2] = tmp[tmp_len - 3] = tmp[tmp_len - 4] = '.';
                 tmp[tmp_len - 1] = 0;
@@ -264,15 +259,15 @@ static void __attribute__((nonnull)) log_sent_pkts(struct q_conn * const c)
             }
 
             if (i->lo == i->hi)
-                pos += snprintf((char *)&tmp[pos], tmp_len - (size_t)pos,
-                                FMT_PNR_OUT "%s", i->lo,
-                                splay_next(diet, &unacked, i) ? ", " : "");
+                pos += snprintf(
+                    (char *)&tmp[pos], tmp_len - (size_t)pos, FMT_PNR_OUT "%s",
+                    i->lo, splay_next(diet, &pn->sent_pkt_nrs, i) ? ", " : "");
             else
                 pos += snprintf((char *)&tmp[pos], tmp_len - (size_t)pos,
                                 FMT_PNR_OUT ".." FMT_PNR_OUT "%s", i->lo, i->hi,
-                                splay_next(diet, &unacked, i) ? ", " : "");
+                                splay_next(diet, &pn->sent_pkt_nrs, i) ? ", "
+                                                                       : "");
         }
-        diet_free(&unacked);
 
         if (pos)
             warn(INF, "%s conn %s, %s unacked: %s", conn_type(c),
@@ -322,9 +317,7 @@ rtx_pkt(struct w_iov * const v, struct pkt_meta * const m)
 static void do_w_tx(struct w_sock * const ws, struct w_iov_sq * const q)
 {
     w_tx(ws, q);
-    do
-        w_nic_tx(ws->w);
-    while (w_tx_pending(q));
+    w_nic_tx(ws->w);
 }
 #else
 #define do_w_tx(...)

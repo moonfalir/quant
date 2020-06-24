@@ -47,6 +47,7 @@ void pm_by_nr_del(khash_t(pm_by_nr) * const pbn,
     const khiter_t k = kh_get(pm_by_nr, pbn, p->hdr.nr);
     ensure(k != kh_end(pbn), "found");
     kh_del(pm_by_nr, pbn, k);
+    diet_remove(&p->pn->sent_pkt_nrs, p->hdr.nr);
 }
 
 
@@ -56,6 +57,7 @@ void pm_by_nr_ins(khash_t(pm_by_nr) * const pbn, struct pkt_meta * const p)
     const khiter_t k = kh_put(pm_by_nr, pbn, p->hdr.nr, &ret);
     ensure(ret >= 1, "inserted");
     kh_val(pbn, k) = p;
+    diet_insert(&p->pn->sent_pkt_nrs, p->hdr.nr, 0);
 }
 
 
@@ -78,6 +80,7 @@ void init_pn(struct pn_space * const pn,
     diet_init(&pn->recv);
     diet_init(&pn->recv_all);
     diet_init(&pn->acked_or_lost);
+    diet_init(&pn->sent_pkt_nrs);
     pn->lg_sent = pn->lg_acked = UINT_T_MAX;
     pn->c = c;
     pn->type = type;
@@ -101,6 +104,7 @@ void free_pn(struct pn_space * const pn)
     diet_free(&pn->recv);
     diet_free(&pn->recv_all);
     diet_free(&pn->acked_or_lost);
+    diet_free(&pn->sent_pkt_nrs);
 }
 
 
