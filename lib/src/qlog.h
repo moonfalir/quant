@@ -43,6 +43,8 @@ typedef enum { pkt_tx, pkt_rx, pkt_dp } qlog_pkt_evt_t;
 
 extern void __attribute__((nonnull)) qlog_init(struct q_conn * const c);
 
+extern void qlog_start(struct q_conn * const c, const uint64_t now);
+
 extern void qlog_close(struct q_conn * const c);
 
 extern void __attribute__((nonnull))
