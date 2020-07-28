@@ -75,7 +75,7 @@ qlog_pkt_type_str(const uint8_t flags, const void * const vers)
 
 static void qlog_common(struct q_conn * const c)
 {
-    const uint64_t now = w_now(CLOCK_REALTIME);
+    const uint64_t now = w_now();
     fprintf(c->qlog, "%s[%" PRIu64, likely(c->qlog_last_t) ? "," : "",
             NS_TO_US(now - c->qlog_last_t));
     c->qlog_last_t = now;
