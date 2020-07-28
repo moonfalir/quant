@@ -81,7 +81,7 @@ static void qlog_common(struct q_conn * const c)
         qlog_start(c, now);   
     }
 
-    fprintf(c->qlog, "%s[%" PRIu64, likely(c->qlog_last_t) ? "," : "",
+    fprintf(c->qlog, "%s[%" PRIu64, c->qlog_last_t < now ? "," : "",
             NS_TO_US(now - c->qlog_last_t));
 }
 
