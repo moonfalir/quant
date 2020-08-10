@@ -438,6 +438,10 @@ int main(int argc, char * argv[])
     char qlog_dir[MAXPATHLEN] = "";
     bool verify_certs = false;
     int ret = -1;
+    int kPacketThreshold = 3;
+    bool doPktThresh = true;
+    int upkTimethresh = 9;
+    int btkTimethresh = 8;
 
     // set default TLS log file from environment
     const char * const keylog = getenv("SSLKEYLOGFILE");
