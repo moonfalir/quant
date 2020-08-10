@@ -384,7 +384,7 @@ detect_lost_pkts(struct pn_space * const pn, const bool do_cc)
     // Minimum time of kGranularity before packets are deemed lost.
     const uint64_t loss_del =
         MAX(kGranularity,
-            NS_PER_US * 9 * MAX(c->rec.cur.latest_rtt, c->rec.cur.srtt) / 8);
+            NS_PER_US * upkTimethresh * MAX(c->rec.cur.latest_rtt, c->rec.cur.srtt) / btkTimethresh);
     qlog_timers(tim_ack, "unknown", c, (double) (loss_del / NS_PER_US));
     // Packets sent before this time are deemed lost.
     const uint64_t lost_send_t = w_now() - loss_del;
@@ -424,7 +424,7 @@ detect_lost_pkts(struct pn_space * const pn, const bool do_cc)
                 diet_insert(&lost, m->hdr.nr, 0);
             }
             else {
-                if (pn->lg_acked >= m->hdr.nr + kPacketThreshold) {
+                if (pn->lg_acked >= m->hdr.nr + kPacketThreshold && doPktThresh) {
                     m->lost = true;
                     m->loss_trigger = 2;
                     in_flight_lost |= m->in_flight;

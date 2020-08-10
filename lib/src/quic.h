@@ -76,7 +76,11 @@ struct q_conn; // IWYU pragma: no_forward_declare q_conn
 
 // Maximum reordering in packets before packet threshold loss detection
 // considers a packet lost. The RECOMMENDED value is 3.
-#define kPacketThreshold 3
+//#define kPacketThreshold 3
+int kPacketThreshold = 3;
+bool doPktThresh = true;
+int upkTimethresh = 9;
+int btkTimethresh = 8;
 
 // Timer granularity. This is a system-dependent value. However, implementations
 // SHOULD use a value no smaller than 1ms.
