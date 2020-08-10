@@ -39,7 +39,10 @@
 #include "quic.h"
 #include "tls.h"
 #pragma clang diagnostic pop
-
+int kPacketThreshold = 3;
+bool doPktThresh = true;
+int upkTimethresh = 9;
+int btkTimethresh = 8;
 
 #define MAX_LEN 64
 
