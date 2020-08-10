@@ -105,6 +105,11 @@ struct cb_data {
     int af;
 };
 
+int kPacketThreshold = 3;
+bool doPktThresh = true;
+int upkTimethresh = 9;
+int btkTimethresh = 8;
+
 
 KHASH_MAP_INIT_INT(strm_cache, struct w_iov_sq *)
 
@@ -274,10 +279,6 @@ int main(int argc, char * argv[])
     char key[MAXPATHLEN] = "test/dummy.key";
     char tls_log[MAXPATHLEN] = "";
     char qlog_dir[MAXPATHLEN] = "";
-    int kPacketThreshold = 3;
-    bool doPktThresh = true;
-    int upkTimethresh = 9;
-    int btkTimethresh = 8;
     uint16_t port[MAXPORTS] = {4433, 4434};
     size_t num_ports = 0;
     uint32_t num_bufs = 100000;
