@@ -40,7 +40,10 @@
 #endif
 
 #include <quant/quant.h>
-
+int kPacketThreshold = 3;
+bool doPktThresh = true;
+int upkTimethresh = 9;
+int btkTimethresh = 8;
 
 int main(int argc
 #ifdef NDEBUG
