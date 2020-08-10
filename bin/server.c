@@ -294,7 +294,7 @@ int main(int argc, char * argv[])
         tls_log[MAXPATHLEN - 1] = 0;
     }
 
-    while ((ch = getopt(argc, argv, "hi:p:d:v:c:k:t:b:q:rl:x:")) != -1) {
+    while ((ch = getopt(argc, argv, "hi:p:d:v:c:k:t:b:q:rl:x:a:e:f:g")) != -1) {
         switch (ch) {
         case 'q':
             strncpy(qlog_dir, optarg, sizeof(qlog_dir) - 1);
@@ -329,6 +329,18 @@ int main(int argc, char * argv[])
             break;
         case 'r':
             retry = true;
+            break;
+        case 'a':
+            kPacketThreshold = (int)strtoul(optarg, 0, 10);
+            break;
+        case 'e':
+            upkTimethresh = (int)strtoul(optarg, 0, 10);
+            break;
+        case 'f':
+            btkTimethresh = (int)strtoul(optarg, 0, 10);
+            break;
+        case 'g':
+            doPktThresh = false;
             break;
         case 'l':
             strncpy(tls_log, optarg, sizeof(tls_log) - 1);
