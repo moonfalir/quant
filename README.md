@@ -24,6 +24,12 @@ The quant repository is [on GitHub](https://github.com/NTAP/quant).
 **NOTE:** Quant implements the QUIC transport layer, but does **NOT** implement
 an HTTP/3 binding.
 
+## Added customizations
+
+* -a: set packet threshold value (default 3)
+* -e: set upper time threshold value (default 9)
+* -f: set lower time threshold value (default 8): together (9/8)
+* -g: disable packet threshold loss detection
 
 ## Prerequisites
 
