@@ -412,9 +412,9 @@ detect_lost_pkts(struct pn_space * const pn, const bool do_cc)
                    m->hdr.nr);
 
             // Mark packet as lost, or set time when it should be marked.
-            if (m->t <= lost_send_t) {
+            if (pn->lg_acked >= m->hdr.nr + kPacketThreshold && doPktThresh) {
                 m->lost = true;
-                m->loss_trigger = 1;
+                m->loss_trigger = 2;
                 in_flight_lost |= m->in_flight;
                 incr_out_lost;
                 if (unlikely(lg_lost == UINT_T_MAX) || m->hdr.nr > lg_lost) {
@@ -424,9 +424,9 @@ detect_lost_pkts(struct pn_space * const pn, const bool do_cc)
                 diet_insert(&lost, m->hdr.nr, 0);
             }
             else {
-                if (pn->lg_acked >= m->hdr.nr + kPacketThreshold && doPktThresh) {
+                if (m->t <= lost_send_t) {
                     m->lost = true;
-                    m->loss_trigger = 2;
+                    m->loss_trigger = 1;
                     in_flight_lost |= m->in_flight;
                     incr_out_lost;
                     if (unlikely(lg_lost == UINT_T_MAX) || m->hdr.nr > lg_lost) {
